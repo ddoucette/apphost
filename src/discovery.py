@@ -30,16 +30,24 @@ class Discover:
         self.alive = True
         self.registered_service_list = []
         self.discovered_service_list = []
+        self.cv = threading.Condition()
         self.thread = threading.Thread(target=self.__thread_entry)
         self.thread.daemon = True
         self.thread.start()
 
     def __thread_entry(self):
+        self.cv.acquire()
         while self.alive:
             self.__send_beacon()
             self.__recv_beacons()
             self.__process_discovery_list()
-            time.sleep(self.update_period)
+            try:
+                self.cv.wait(self.update_period)
+            except RuntimeError:
+                # Dont worry about the exception, it simply means we
+                # have timed out
+                pass
+        self.cv.release()
 
     def __process_discovery_list(self):
         #
@@ -50,7 +58,7 @@ class Discover:
         for discovered_service in self.discovered_service_list[:]:
             if discovered_service['time'] < now - self.ageout:
                 # The entry is too old.  Dump it
-                print "Ageout: " + str(discovered_service)
+                # print "Ageout: " + str(discovered_service)
                 self.discovered_service_list.remove(discovered_service)
 
     def __recv_beacons(self):
@@ -135,8 +143,8 @@ class Discover:
                                'time': now}
                 self.discovered_service_list.append(new_service)
 
-                print ("New: " + str(self) + " " + str(r_uuid)
-                                + " " + str(new_service))
+                #print ("New: " + str(self) + " " + str(r_uuid)
+                #                + " " + str(new_service))
             else:
                 #
                 # The service exists.  Update the timestamp
@@ -200,10 +208,12 @@ class Discover:
         return str(self.l_uuid)
 
     def close(self):
+        print "Closing: " + str(self)
+        self.cv.acquire()
         self.alive = False
-        self.thread.join(self.update_period)
-        if self.thread.isAlive() is True:
-            print "Discovery thread did not die!"
+        self.cv.notify_all()
+        self.cv.release()
+        self.thread.join()
         self.registered_service_list = []
         self.discovered_service_list = []
 
@@ -328,9 +338,10 @@ def test3():
     ageout = 40
     dlist = []
     service_list = []
+    nr_discovery_objs = 100
 
     i = 0
-    while i < 100:
+    while i < nr_discovery_objs:
         service_name = "service" + str(i)
         service_location = "tcp://localhost:" + str(4000 + i)
         service = {'name': service_name, 'location': service_location}
@@ -347,11 +358,13 @@ def test3():
     #
     # Everyone should know eachother's name by now...
     #
+    print "Checking all service discoveries..."
+
     i = 0
-    while i < 100:
+    while i < nr_discovery_objs:
         d = dlist[i]
         j = 0
-        while j < 100:
+        while j < nr_discovery_objs:
             if j != i:
                 service = service_list[j]
                 has_service = d.discovered_service_exists(service)
@@ -359,15 +372,17 @@ def test3():
             j = j + 1
         i = i + 1
 
+    print "Closing discovery objects ..."
     i = 0
-    while i < 100:
+    while i < nr_discovery_objs:
         d = dlist[i]
         d.close()
+        i = i + 1
 
     print "PASSED"
 
 
 if __name__ == '__main__':
     test1()
-    #test2()
-    #test3()
+    test2()
+    test3()
