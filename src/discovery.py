@@ -30,6 +30,7 @@ class Discover:
         self.alive = True
         self.registered_service_list = []
         self.discovered_service_list = []
+        self.notifiers = {}
         self.cv = threading.Condition()
         self.thread = threading.Thread(target=self.__thread_entry)
         self.thread.daemon = True
@@ -60,6 +61,13 @@ class Discover:
                 # The entry is too old.  Dump it
                 # print "Ageout: " + str(discovered_service)
                 self.discovered_service_list.remove(discovered_service)
+
+                # Notify those who are registered
+                for name in self.notifiers:
+                    if name == discovered_service['name']:
+                        notifier_list = self.notifiers[name]
+                        for notifier_obj in notifier_list:
+                            notifier_obj.notify_remove(discovered_service)
 
     def __recv_beacons(self):
         while True:
@@ -143,6 +151,14 @@ class Discover:
                                'time': now}
                 self.discovered_service_list.append(new_service)
 
+                # Notify all those who have registered for this
+                # service
+                for name in self.notifiers:
+                    if name == service_name:
+                        notifier_list = self.notifiers[name]
+                        for notifier_obj in notifier_list:
+                            notifier_obj.notify_add(new_service)
+
                 #print ("New: " + str(self) + " " + str(r_uuid)
                 #                + " " + str(new_service))
             else:
@@ -169,6 +185,28 @@ class Discover:
             beacon = beacon + " " + service['name']
             beacon = beacon + " " + service['location']
         self.udp.send(beacon)
+
+    def register_notifier(self, service_name, notifier_obj):
+        # Check to ensure that the notifier is not
+        # already registered against the specified service
+        for name in self.notifiers:
+            if name != service_name:
+                continue
+
+            notifier_objs = self.notifiers[name]
+            for l_notifier_obj in notifier_objs:
+                assert(l_notifier_obj != notifier_obj)
+
+            # The service name exists in our dictionary.
+            # Add this notifier to the list of notifiers for this service
+            notifier_objs.append(notifier_obj)
+            return
+
+        # This service has not yet been added to our notifier dictionary.
+        #new_entry = {'name': service_name: 'notifiers': [notifier_obj]}
+
+        notifier_list = [notifier_obj]
+        self.notifiers[service_name] = notifier_list
 
     def register_service(self, service):
         # Services have a standard name, (I.e. WORKER1,LOGGER,...) and
@@ -218,9 +256,37 @@ class Discover:
         self.discovered_service_list = []
 
 
+"""
+    DiscoverNotifier is an interface class for notifications when
+    a service is discovered
+"""
+
+
+class DiscoverNotifier:
+
+    def __init__(self):
+        pass
+
+    """
+        The notify_add method is called when a service in the
+        subscriber list is discovered.
+    """
+    def notify_add(self, service):
+        pass
+
+    """
+        The notify_add method is called when a service in the
+        subscriber list is removed.
+    """
+
+    def notify_remove(self, service):
+        pass
+
+
 def test1():
     # Start up 2 discover objects.  They should discover
     # eachother.
+
     d1 = Discover(1, 4)
     d1_service = {'name': 'HOOZA', 'location': 'tcp://localhost:4321'}
     d1.register_service(d1_service)
@@ -382,7 +448,63 @@ def test3():
     print "PASSED"
 
 
+def test4():
+    #
+    # Verify the DiscoverNotifier interface works.
+    #
+    class Mytestobj(DiscoverNotifier):
+        def __init__(self):
+            self.isAdded = False
+
+        def notify_add(self, service):
+            assert(service['name'] == "SOMESRV")
+            self.isAdded = True
+
+        def notify_remove(self, service):
+            assert(service['name'] == "SOMESRV")
+            self.isAdded = False
+
+    mto = Mytestobj()
+    d1 = Discover(1, 4)
+    d1.register_notifier("SOMESRV", mto)
+
+    d2 = Discover(1, 4)
+    d2_service = {'name': 'SOMESRV', 'location': 'tcp://localhost:3345'}
+    d2.register_service(d2_service)
+
+    time.sleep(5)
+
+    assert(mto.isAdded is True)
+
+    # Now remove the service and verify we are notified again
+    d2.close()
+    del d2
+
+    time.sleep(6)
+    assert(mto.isAdded is False)
+
+    # Attempt to re-register for the notification
+    got_assertion = False
+    try:
+        d1.register_notifier("SOMESRV", mto)
+    except AssertionError:
+        got_assertion = True
+
+    assert(got_assertion)
+
+    # Recreate the service, but with a minor name change
+    d2 = Discover(1, 4)
+    d2_service = {'name': 'SOMESRV2', 'location': 'tcp://localhost:3345'}
+    d2.register_service(d2_service)
+
+    time.sleep(5)
+    assert(mto.isAdded is False)
+
+    print "PASSED"
+
+
 if __name__ == '__main__':
-    test1()
-    test2()
-    test3()
+    #test1()
+    #test2()
+    #test3()
+    test4()
