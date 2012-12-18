@@ -4,6 +4,8 @@
 """
 import zmq
 import udplib
+import re
+from local_log import *
 
 
 class Protocol():
@@ -11,23 +13,30 @@ class Protocol():
     """
         The protocol class is an abstract class, containing both interfaces and
         implementation.
-        The protocol class itself is threadless, simply providing code and methods
-        for the creation of sockets for communication.
+        The protocol class itself is threadless, simply providing
+        code and methods for the creation of sockets for communication.
     """
-    socket_types = [ "UDP_BROADCAST", "ZMQ_PUB", "ZMQ_ROUTER", "ZMQ_DEALER" ]
+    socket_types = ["UDP_BROADCAST",
+                    "ZMQ_PUB",
+                    "ZMQ_SUB",
+                    "ZMQ_ROUTER",
+                    "ZMQ_DEALER"]
 
     """
         Constructor
-        protocol_headers - Contains a list of strings, or regular expressions
-                           with which the protocol can validate incoming messages.
+        protocol_headers - Contains a list of strings
+                           with which the protocol can validate
+                           incoming messages.
+                           The specified strings will be removed
+                           from the message before delivery to the caller.
     """
     def __init__(self, service_name, socket_type, protocol_headers=[]):
-        
-        assert(socket_type in socket_types) 
+
+        assert(socket_type in Protocol.socket_types)
 
         self.ctx = None
-        self.service_name = service_name;
-        self.socket_type = socket_type;
+        self.service_name = service_name
+        self.socket_type = socket_type
         self.protocol_headers = protocol_headers
 
         self.socket = None
@@ -81,19 +90,19 @@ class Protocol():
                 if m is None:
                     return False
 
-        self.service_protocol = m.group(0)
-        self.service_address = m.group(1)
-        self.service_port = int(m.group(2))
+        self.service_protocol = m.group(1)
+        self.service_address = m.group(2)
+        self.service_port = int(m.group(3))
         return True
 
-    def create_client(self, service_location, subscription=""):
+    def __create_socket(self, service_location, subscription):
         assert(self.udp is None)
         assert(self.zmq_ctx is None)
         assert(self.socket is None)
 
         location_ok = self.__check_location(service_location)
         assert(location_ok)
-        
+
         self.service_location = service_location
 
         # Create our socket type and connect, if necessary
@@ -102,7 +111,8 @@ class Protocol():
             self.f_send = self.udp.send
             self.f_recv = self.udp.recv_noblock
             return
-        elif self.socket_type == "ZMQ_PUB":
+
+        if self.socket_type == "ZMQ_PUB":
             self.zmq_ctx = zmq.Context.instance()
             assert(self.zmq_ctx is not None)
             self.socket = self.zmq_ctx.socket(zmq.PUB)
@@ -113,7 +123,7 @@ class Protocol():
             self.socket = self.zmq_ctx.socket(zmq.SUB)
             assert(self.socket is not None)
             self.socket.setsockopt(zmq.SUBSCRIBE, subscription)
-        else
+        else:
             assert(False)
 
         self.f_send = self.socket.send
@@ -121,3 +131,120 @@ class Protocol():
         self.f_recv = self.socket.recv
         self.f_recv_multipart = self.socket.recv_multipart
 
+    def create_client(self, service_location, subscription=""):
+        self.__create_socket(service_location, subscription)
+        if self.socket is not None:
+            self.socket.connect(service_location)
+
+    def create_server(self, service_location, subscription="", discovery=True):
+        self.__create_socket(service_location, subscription)
+        assert(self.socket is not None)
+        self.socket.bind(service_location)
+
+        if discovery is True:
+            service = {'name': self.service_name, 'location': service_location}
+            self.discover_service = Discover()
+            assert(self.discover_service is not None)
+            self.discover_service.register_service(service)
+
+    def recv(self):
+        assert(self.f_recv is not None)
+        msg = self.f_recv()
+        if msg is None:
+            return None
+
+        msg = msg.lstrip()
+        for header in self.protocol_headers:
+            (msghdr, sep, msg) = msg.partition(" ")
+            if msghdr != header:
+                Llog.LogError("Invalid protocol header received!" +
+                               "(" + msghdr + ")")
+                return None
+        return msg
+
+    def recv_multipart(self):
+        assert(self.f_recv_multipart is not None)
+        msg = self.f_recv_multipart()
+        if msg is None:
+            return None
+
+        if len(msg) < len(self.protocol_headers):
+            Llog.LogError("Invalid/short message received!")
+            return None
+
+        for msghdr, protohdr in zip(msg, self.protocol_headers):
+            if msghdr != protohdr:
+                Llog.LogError("Invalid protocol header received!" +
+                               "(" + msghdr + ")")
+                return None
+        return msg
+
+    def send(self, msg):
+        assert(self.f_recv is not None)
+        sendmsg = " ".join(self.protocol_headers) + " " + msg
+        Llog.LogDebug("Sending... " + sendmsg)
+        self.f_send(sendmsg)
+
+    def send_multipart(self, msg):
+        assert(self.f_recv is not None)
+        sndmsg = self.protocol_headers[:]
+        sndmsg.append(msg)
+        self.f_send_multipart(sndmsg)
+
+
+def test1():
+
+    # Simple test.  Create a single client and a single server.
+    # Send messages between them.
+    c = Protocol("SIMPLE_SERVICE", "ZMQ_SUB", ["SIMPLE!"])
+    s = Protocol("SIMPLE_SERVICE", "ZMQ_PUB", ["SIMPLE!"])
+    s.create_server("tcp://127.0.0.1:5678", discovery=False)
+    c.create_client("tcp://127.0.0.1:5678")
+    poller = zmq.Poller()
+    poller.register(c.socket, zmq.POLLIN)
+
+    s.send("hello world")
+    msg = ""
+    while True:
+        try:
+            items = dict(poller.poll())
+        except:
+            break
+
+        if c.socket in items:
+            msg = c.recv()
+            break
+
+    assert(msg == "hello world")
+    print "PASSED"
+
+
+def test2():
+
+    # Test using PUB/SUB with a subscription
+    c = Protocol("SIMPLE_SERVICE", "ZMQ_SUB", ["SIMPLE2"])
+    s = Protocol("SIMPLE_SERVICE", "ZMQ_PUB", ["SIMPLE2"])
+    s.create_server("tcp://127.0.0.1:5678", discovery=False)
+    c.create_client("tcp://127.0.0.1:5678", "SIMPLE2")
+    poller = zmq.Poller()
+    poller.register(c.socket, zmq.POLLIN)
+
+    s.send("hello world2")
+    msg = ""
+    while True:
+        try:
+            items = dict(poller.poll())
+        except:
+            break
+
+        if c.socket in items:
+            msg = c.recv()
+            break
+
+    assert(msg == "hello world2")
+    print "PASSED"
+
+
+if __name__ == '__main__':
+    test1()
+    test2()
