@@ -48,6 +48,8 @@ class Discover:
                 # Dont worry about the exception, it simply means we
                 # have timed out
                 pass
+            except KeyboardError:
+                self.alive = False
         self.cv.release()
 
     def __process_discovery_list(self):
@@ -91,12 +93,19 @@ class Discover:
                     service_location)
         if m is not None:
             return True
+
+        # Check to see if the location matches tcp:*:port
+        m = re.match(
+                    r'tcp://\*+:[0-9]+',
+                    service_location)
+        if m is not None:
+            return True
         return False
 
     def __process_beacon(self, beacon):
         pieces = beacon.split()
 
-        if len(pieces) < 4:
+        if len(pieces) < 2:
             print "Invalid/short beacon received: " + beacon
             return
 
@@ -116,6 +125,8 @@ class Discover:
 
         if r_uuid == self.l_uuid:
             return
+
+        # print "Beacon: <" + str(self.l_uuid) + "> ==> [" + str(r_uuid) + "]"
 
         #
         # We have a valid beacon frame from another source.
@@ -177,8 +188,8 @@ class Discover:
         # [ BEACON UUID service1-name service1-location
         #       service2-name service2-location ... ]
         #
-        if len(self.registered_service_list) == 0:
-            return
+        #if len(self.registered_service_list) == 0:
+        #    return
 
         beacon = "BEACON " + str(self.l_uuid)
         for service in self.registered_service_list:

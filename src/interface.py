@@ -23,7 +23,6 @@ class Interface():
                     protocol_type=None,
                     protocol_location="",
                     protocol_bind=False):
-
         self.ctx = zmq.Context.instance()
         self.in_pipe = zhelpers.zpipe(self.ctx)
         self.out_pipe = zhelpers.zpipe(self.ctx)
@@ -36,8 +35,10 @@ class Interface():
         # for the protocol socket.  If so, create and bind/connect
         # the socket and add it to the pollers list
         if protocol_type is not None and protocol_location != "":
+            print "Creating a protocol socket for: " + protocol_location
             self.protocol_socket = self.ctx.socket(protocol_type)
             if protocol_bind is True:
+                print "Binding socket for: " + protocol_location
                 self.protocol_socket.bind(protocol_location)
             else:
                 self.protocol_socket.connect(protocol_location)
@@ -52,6 +53,12 @@ class Interface():
         self.close()
 
     def close(self):
+        # Close our discovery service
+        if self.discovery is not None:
+            self.discovery.close()
+
+        self.discovery = None
+
         # Close all the timers
         for timer in self.timers:
             timer.close()
@@ -81,12 +88,10 @@ class Interface():
     def __intf_thread_entry(self):
         while self.alive:
             items = dict(self.poller.poll())
-
             if self.in_pipe[1] in items:
                 self.__process_pipes()
 
-            if (self.protocol_socket is not None and
-                     self.protocol_socket in items):
+            if self.protocol_socket in items:
                 self.__process_socket()
 
     def __process_socket(self):
@@ -180,12 +185,12 @@ class InterfaceTimer():
         self.name = name
         self.period = period
         self.interface = interface
+        self.discovery = None
         self.alive = True
         self.timer = threading.Timer(period, self.__timer_handler)
         self.timer.start()
 
     def __timer_handler(self):
-        self.timer = None
         msg = ["TIMER", self.name]
         self.interface.push_in_msg_raw(msg)
         # Re-schedule the timer...
@@ -195,5 +200,4 @@ class InterfaceTimer():
 
     def close(self):
         self.alive = False
-        if self.timer is not None:
-            self.timer.cancel()
+        self.timer.cancel()

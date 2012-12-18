@@ -19,7 +19,7 @@ class Log(DiscoverNotifier, Interface):
     DEBUG = "D"
     log_inst = None
 
-    def __init__(self, throttle=True, throttle_period=3):
+    def __init__(self, throttle=True, throttle_period=3, local_echo=False):
         assert(Log.log_inst is None)
         Interface.__init__(self)
         self.publisher = self.ctx.socket(zmq.PUB)
@@ -27,6 +27,10 @@ class Log(DiscoverNotifier, Interface):
         self.log_entries = []
         self.throttle = throttle
         self.throttle_period = throttle_period
+
+        # If local_echo is True, this instance will print out all log messages,
+        # even if we are connected to a LOG_COLLECTOR service
+        self.local_echo = local_echo
 
         # Create a timer to process our throttle log entries
         if throttle is True:
@@ -36,7 +40,7 @@ class Log(DiscoverNotifier, Interface):
         # when a log collector is discovered.  We will connect
         # up to all log collectors and publish messages to
         # them.
-        self.discovery = Discover()
+        self.discovery = Discover(2, 5)
         self.discovery.register_notifier("LOG_COLLECTOR", self)
 
         Log.log_inst = self
@@ -91,21 +95,31 @@ class Log(DiscoverNotifier, Interface):
 
         elif msg[0] == "CONNECT":
             assert(len(msg) == 3)
-            assert(msg[1] == "LOG_COLLECTOR")
-            print "Connecting to " + msg[1] + " at " + msg[2]
+            service_name = msg[1]
+            assert(service_name == "LOG_COLLECTOR")
+            service_location = msg[2]
+            print "Connecting to " + service_name + " at " + service_location
+            self.publisher.connect(service_location)
+            self.connected = True
+
         elif msg[0] == "DISCONNECT":
             assert(len(msg) == 3)
-            assert(msg[1] == "LOG_COLLECTOR")
-            print "Disconnecting from " + msg[1] + " at " + msg[2]
+            service_name = msg[1]
+            assert(service_name == "LOG_COLLECTOR")
+            service_location = msg[2]
+            print "Disconnecting from " + service_name + " at " + service_location
+            self.publisher.connect(service_location)
+            self.connected = False
         else:
             assert(False)
 
     def __print_msg(self, level, filename, line, msg):
         if self.connected is True:
-            msg.pop(0)
-            self.publisher.send_multipart(msg)
-        else:
-            print level + ": " + filename + ":" + line + " " + msg
+            multi_msg = [level, filename, line, msg]
+            self.publisher.send_multipart(multi_msg)
+            if self.local_echo is False:
+                return
+        print level + ": " + filename + ":" + line + " " + msg
 
     @overrides(Interface)
     def process_timer(self, timer):
@@ -147,7 +161,6 @@ class Log(DiscoverNotifier, Interface):
         # Connect up to the log collector service
         # Send a message to the log instance thread to do the
         # connecting for us.
-        print "NOTIFY ADD!"
         msg = ["CONNECT", service['name'], service['location']]
         self.push_in_msg(msg)
 
@@ -268,11 +281,75 @@ def test4():
     print "PASSED"
 
 
+class TestLogCollector(Interface):
+    # dont use 'localhost'.  TCP/zeromq cannot deal with DNS names when using bind!
+    def __init__(self, location="tcp://127.0.0.1:9932", poll_period=2, ageout=5):
+        Interface.__init__(self, zmq.SUB, location, True)
+        self.discovery = Discover(poll_period, ageout)
+        self.service = {'name': 'LOG_COLLECTOR', 'location': location}
+        self.discovery.register_service(self.service)
+        self.num_msgs_received = 0
+
+        self.protocol_socket.setsockopt(zmq.SUBSCRIBE, "")
+
+        # Start up the interface
+        self.start()
+
+    @overrides(Interface)
+    def process_protocol(self, msg):
+        strmsg = ""
+        for msg_part in msg:
+            strmsg = strmsg + " " + msg_part
+        print "MSG: " + strmsg
+        self.num_msgs_received = self.num_msgs_received + 1
+
+
+def test5():
+
+    # Verify the log module successfully finds a LOG_COLLECTOR
+    # service and connects to it:
+
+    log = Log(throttle=False)
+    c = TestLogCollector()
+
+    # Give the log object a few seconds to find the LOG_COLLECTOR
+    # service and connect
+    time.sleep(20)
+
+    assert(log.connected is True)
+
+    num_messages = 100
+
+    while num_messages > 0:
+        message = "message:" + str(num_messages)
+        Log.LogInfo(message)
+        num_messages = num_messages - 1
+
+    time.sleep(5)
+    assert(c.num_msgs_received == 100)
+
+    # Now lets stop the log collector and verify the log instance
+    # disconnects
+    c.close()
+    del c
+    c = None
+
+    print "Removed the log collector!  Waiting for disconnect!"
+
+    time.sleep(20)
+    assert(log.connected is False)
+
+    Log.Close()
+    log = None
+    print "PASSED"
+
+
 if __name__ == '__main__':
     #test1()
     #test2()
     #test3()
-    test4()
+    #test4()
+    test5()
 else:
     log = Log()
     log = None
