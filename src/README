@@ -1,0 +1,17 @@
+The application hosting platform is constructed using the following basic building blocks:
+
+1) Protocol (protocol.py)
+    The protocol interface provides basic method interfaces to construct the front-end of a protocol module.
+
+
+            ------------\                     /------------
+                         |       socket      |
+              Interface  | <<<============>>>|  Protocol    <<<=====   Network
+                         |        I/0        |
+            ------------/                     \------------
+
+    The protocol is responsible for creating the socket communication layer for the interface to use.
+    The protocol is also responsible for the creation of a discovery object, if the protocol is a 
+    service which others will need to connect to, or if the protocol needs notification when other
+    services are available.
+    The protocol interface supports either zmq sockets, or udplib broadcast sockets.
