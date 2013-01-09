@@ -4,7 +4,7 @@
 """
 import zmq
 import udplib
-import re
+import location 
 from local_log import *
 
 
@@ -20,7 +20,16 @@ class Protocol():
                     "ZMQ_PUB",
                     "ZMQ_SUB",
                     "ZMQ_ROUTER",
-                    "ZMQ_DEALER"]
+                    "ZMQ_DEALER",
+                    "ZMQ_REQ",
+                    "ZMQ_REP"]
+
+    class Stats():
+        def __init__(self):
+            self.msgs_rx = 0
+            self.msgs_tx = 0
+            self.msgs_err_rx_short = 0
+            self.msgs_err_rx_bad_header = 0
 
     """
         Constructor
@@ -34,6 +43,7 @@ class Protocol():
 
         assert(socket_type in Protocol.socket_types)
 
+        self.stats = Protocol.Stats()
         self.ctx = None
         self.service_name = service_name
         self.socket_type = socket_type
@@ -68,39 +78,18 @@ class Protocol():
         # Close our discovery service
         if self.discovery is not None:
             self.discovery.close()
-
         self.discovery = None
 
-    def __check_location(self, service_location):
-
-        # Check to see if the location matches tcp|udp://X.X.X.X:port
-        m = re.match(
-                    r'(tcp|udp)://([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+):([0-9]+)',
-                    service_location)
-        if m is None:
-            # Check to see if the location matches tcp:domainname:port
-            m = re.match(
-                        r'(tcp)://([0-9a-zA-Z\-]+):([0-9]+)',
-                        service_location)
-            if m is None:
-                # Check to see if the location matches tcp:*:port
-                m = re.match(
-                            r'(tcp)://(\*+):([0-9]+)',
-                            service_location)
-                if m is None:
-                    return False
-
-        self.service_protocol = m.group(1)
-        self.service_address = m.group(2)
-        self.service_port = int(m.group(3))
-        return True
+        #if self.socket is not None:
+        #    self.socket.disconnect()
+        #self.socket = None
 
     def __create_socket(self, service_location, subscription):
         assert(self.udp is None)
         assert(self.zmq_ctx is None)
         assert(self.socket is None)
 
-        location_ok = self.__check_location(service_location)
+        location_ok = check_location(service_location)
         assert(location_ok)
 
         self.service_location = service_location
@@ -110,16 +99,16 @@ class Protocol():
             self.udp = udplib.UDP(self.service_port, self.service_address)
             self.f_send = self.udp.send
             self.f_recv = self.udp.recv_noblock
+            self.socket = self.udp.socket
             return
 
+        self.zmq_ctx = zmq.Context(1)
+        assert(self.zmq_ctx is not None)
+
         if self.socket_type == "ZMQ_PUB":
-            self.zmq_ctx = zmq.Context.instance()
-            assert(self.zmq_ctx is not None)
             self.socket = self.zmq_ctx.socket(zmq.PUB)
             assert(self.socket is not None)
         elif self.socket_type == "ZMQ_SUB":
-            self.zmq_ctx = zmq.Context.instance()
-            assert(self.zmq_ctx is not None)
             self.socket = self.zmq_ctx.socket(zmq.SUB)
             assert(self.socket is not None)
             self.socket.setsockopt(zmq.SUBSCRIBE, subscription)
@@ -133,19 +122,31 @@ class Protocol():
 
     def create_client(self, service_location, subscription=""):
         self.__create_socket(service_location, subscription)
-        if self.socket is not None:
+        if (self.socket is not None) and \
+            (self.socket_type != "UDP_BROADCAST"):
             self.socket.connect(service_location)
 
     def create_server(self, service_location, subscription="", discovery=True):
+
+        if self.socket_type == "UDP_BROADCAST":
+            Llog.LogError("Cannot create UDP server!")
+            assert(False)
+
         self.__create_socket(service_location, subscription)
         assert(self.socket is not None)
-        self.socket.bind(service_location)
 
         if discovery is True:
+            # the 'discovery' module is built using this class, so we
+            # cannot import it globally at the top.  Only here when
+            # the caller is purposely creating a discovery service.
+            import discovery
             service = {'name': self.service_name, 'location': service_location}
-            self.discover_service = Discover()
+            self.discover_service = discovery.Discover()
             assert(self.discover_service is not None)
             self.discover_service.register_service(service)
+
+        # bind at the last step to avoid 'address already in use'
+        self.socket.bind(service_location)
 
     def recv(self):
         assert(self.f_recv is not None)
@@ -153,12 +154,15 @@ class Protocol():
         if msg is None:
             return None
 
+        self.stats.msgs_rx += 1
+
         msg = msg.lstrip()
         for header in self.protocol_headers:
             (msghdr, sep, msg) = msg.partition(" ")
             if msghdr != header:
                 Llog.LogError("Invalid protocol header received!" +
                                "(" + msghdr + ")")
+                self.stats.msgs_err_rx_bad_header += 1
                 return None
         return msg
 
@@ -168,27 +172,34 @@ class Protocol():
         if msg is None:
             return None
 
+        self.stats.msgs_rx += 1
+
         if len(msg) < len(self.protocol_headers):
             Llog.LogError("Invalid/short message received!")
+            self.stats.msgs_err_rx_short += 1
             return None
 
         for msghdr, protohdr in zip(msg, self.protocol_headers):
             if msghdr != protohdr:
                 Llog.LogError("Invalid protocol header received!" +
                                "(" + msghdr + ")")
+                self.stats.msgs_err_rx_bad_header += 1
                 return None
-        return msg
+
+        # Strip off the protocol headers and just return the
+        # content portion of the message
+        return msg[len(self.protocol_headers):]
 
     def send(self, msg):
-        assert(self.f_recv is not None)
+        assert(self.f_send is not None)
         sendmsg = " ".join(self.protocol_headers) + " " + msg
         Llog.LogDebug("Sending... " + sendmsg)
         self.f_send(sendmsg)
 
     def send_multipart(self, msg):
-        assert(self.f_recv is not None)
-        sndmsg = self.protocol_headers[:]
-        sndmsg.append(msg)
+        assert(self.f_send_multipart is not None)
+        sndmsg = self.protocol_headers[:] + msg[:]
+        Llog.LogDebug("sendmsg: " + str(sndmsg))
         self.f_send_multipart(sndmsg)
 
 
@@ -200,6 +211,7 @@ def test1():
     s = Protocol("SIMPLE_SERVICE", "ZMQ_PUB", ["SIMPLE!"])
     s.create_server("tcp://127.0.0.1:5678", discovery=False)
     c.create_client("tcp://127.0.0.1:5678")
+    time.sleep(1)
     poller = zmq.Poller()
     poller.register(c.socket, zmq.POLLIN)
 
@@ -224,8 +236,9 @@ def test2():
     # Test using PUB/SUB with a subscription
     c = Protocol("SIMPLE_SERVICE", "ZMQ_SUB", ["SIMPLE2"])
     s = Protocol("SIMPLE_SERVICE", "ZMQ_PUB", ["SIMPLE2"])
-    s.create_server("tcp://127.0.0.1:5678", discovery=False)
-    c.create_client("tcp://127.0.0.1:5678", "SIMPLE2")
+    s.create_server("tcp://127.0.0.1:5679", discovery=False)
+    c.create_client("tcp://127.0.0.1:5679", "SIMPLE2")
+    time.sleep(1)
     poller = zmq.Poller()
     poller.register(c.socket, zmq.POLLIN)
 
@@ -245,6 +258,73 @@ def test2():
     print "PASSED"
 
 
+def test3():
+    # Simple test.  Create a single client and a single server.
+    # Send messages between them.
+    c = Protocol("SIMPLE_SERVICE", "ZMQ_SUB", ["SIMPLE!", "aabbcc"])
+    s = Protocol("SIMPLE_SERVICE", "ZMQ_PUB", ["SIMPLE!", "aabbcc"])
+    s.create_server("tcp://127.0.0.1:5678", discovery=False)
+    c.create_client("tcp://127.0.0.1:5678", "SIMPLE!")
+
+    # It is important to sleep for a period of time, otherwise the
+    # server will attempt to send out the message below before
+    # the subscription has been registered.
+    time.sleep(1)
+    s.send_multipart(["hello world", "bye"])
+    msg = c.recv_multipart()
+    assert(len(msg) == 2)
+    assert(msg[0] == "hello world")
+    assert(msg[1] == "bye")
+
+    s.send_multipart([])
+    msg = c.recv_multipart()
+    assert(len(msg) == 0)
+
+    print "PASSED"
+
+
+def test4():
+    # UDP client/server test
+    a = Protocol("SIMPLE_SERVICE", "UDP_BROADCAST", ["SIMPLE!"])
+    b = Protocol("SIMPLE_SERVICE", "UDP_BROADCAST", ["SIMPLE!"])
+    a.create_client("udp://255.255.255.255:3342")
+    b.create_client("udp://255.255.255.255:3342")
+
+    # It is important to sleep for a period of time, otherwise the
+    # server will attempt to send out the message below before
+    # the subscription has been registered.
+    time.sleep(1)
+
+    a.send("hello world")
+    time.sleep(1)
+    msg = b.recv()
+    assert(msg == "hello world")
+
+    print "PASSED"
+
+
+def test5():
+    # UDP client/server test
+    a = Protocol("SIMPLE_SERVICE", "UDP_BROADCAST", ["SIMPLE!"])
+    b = Protocol("SIMPLE_SERVICE", "UDP_BROADCAST", ["SIMPLE"])
+    a.create_client("udp://255.255.255.255:3342", "SIMPLE!")
+    b.create_client("udp://255.255.255.255:3342", "SIMPLE!")
+
+    # It is important to sleep for a period of time, otherwise the
+    # server will attempt to send out the message below before
+    # the subscription has been registered.
+    time.sleep(1)
+
+    a.send("hello world")
+    time.sleep(1)
+    msg = b.recv()
+    assert(msg == "hello world")
+
+    print "PASSED"
+
+
 if __name__ == '__main__':
     test1()
     test2()
+    test3()
+    test4()

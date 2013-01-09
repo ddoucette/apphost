@@ -4,6 +4,7 @@
 import socket
 import select
 
+MAX_RECV = 1024
 
 class UDP:
 
@@ -37,16 +38,16 @@ class UDP:
         assert(self.socket)
         self.socket.sendto(buf, 0, (self.broadcast, self.port))
 
-    def recv(self, n):
+    def recv(self):
         assert(self.socket)
-        return self.socket.recv(n)
+        return self.socket.recv(MAX_RECV)
 
-    def recv_noblock(self, n):
+    def recv_noblock(self):
         assert(self.socket)
         (ready_read, ready_write, in_error) = select.select([self.socket], [], [], 0)
 
         for socket in ready_read:
             if socket == self.socket:
                 # Our socket is readable
-                return self.socket.recv(n)
+                return self.socket.recv(MAX_RECV)
         return None

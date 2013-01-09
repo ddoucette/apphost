@@ -153,8 +153,46 @@ class Protocol():
         Llog.LogDebug("Subscribing to <" + subscription + ">")
         self.socket.setsockopt(zmq.SUBSCRIBE, subscription)
 
+    def recv_multipart(self):
+        assert(self.socket is not None)
+        assert(self.socket_type == zmq.ROUTER or
+               self.socket_type == zmq.DEALER)
+
+        msg = self.socket.recv_multipart()
+        if msg is None:
+            return None
+
+        if len(msg) < 2:
+            Llog.LogInfo("Invalid message received! " + str(msg))
+            return None
+
+        # Some multipart messages, such as those received from a DEALER
+        # socket, have no empty frame delimiter, i.e. ""
+        address = msg[0]
+        if len(msg) == 2:
+            msg = "".join(msg[1:])
+        else:
+            msg = "".join(msg[2:])
+
+        self.stats.msgs_rx += 1
+
+        msg = msg.lstrip()
+        for header in self.protocol_headers:
+            (msghdr, sep, msg) = msg.partition(" ")
+            if msghdr != header:
+                Llog.LogError("Invalid protocol header received!" +
+                               "(" + msghdr + ")")
+                self.stats.msgs_err_rx_bad_header += 1
+                return None
+        return [address, msg]
+
     def recv(self):
         assert(self.socket is not None)
+        assert(self.socket_type != zmq.ROUTER)
+        assert(self.socket_type != zmq.DEALER)
+
+        # For non-ROUTER sockets, just receive and process the
+        # message
         msg = self.socket.recv()
         if msg is None:
             return None
@@ -171,14 +209,34 @@ class Protocol():
                 return None
         return msg
 
+    def send_multipart(self, msg):
+        assert(self.socket is not None)
+        assert(self.socket_type == zmq.ROUTER)
+
+        # The multipart send contains the address for the destination
+        # and the message in a 2-entry list
+        assert(len(msg) == 2)
+
+        if len(self.protocol_headers) > 0:
+            sendmsg = "".join(self.protocol_headers) + " " + msg[1]
+        else:
+            sendmsg = msg
+
+        Llog.LogDebug("Sending to " + msg[0] + " <" + sendmsg + ">")
+        self.socket.send_multipart([msg[0], "", sendmsg])
+        self.stats.msgs_tx += 1
+
     def send(self, msg):
         assert(self.socket is not None)
+        assert(self.socket_type != zmq.ROUTER)
+
         if len(self.protocol_headers) > 0:
             sendmsg = "".join(self.protocol_headers) + " " + msg
         else:
             sendmsg = msg
         Llog.LogDebug("Sending... <" + sendmsg + ">")
         self.socket.send(sendmsg)
+        self.stats.msgs_tx += 1
 
 
 def test1():
@@ -232,98 +290,150 @@ def test1():
 
 def test2():
 
-    # Test using PUB/SUB with a subscription
-    c = Protocol("SIMPLE_SERVICE", "ZMQ_SUB", ["SIMPLE2"])
-    s = Protocol("SIMPLE_SERVICE", "ZMQ_PUB", ["SIMPLE2"])
-    s.create_server("tcp://127.0.0.1:5679", discovery=False)
-    c.create_client("tcp://127.0.0.1:5679", "SIMPLE2")
-    time.sleep(1)
-    poller = zmq.Poller()
-    poller.register(c.socket, zmq.POLLIN)
+    # REQ/REP with bad headers
+    req = Protocol(zmq.REQ, ["MYPROTO"])
+    req.create_client("tcp", "127.0.0.1", 5678)
+    rep = Protocol(zmq.REP, ["MYPROTO"])
+    rep.create_server("tcp", "127.0.0.1", [5678, 5690])
 
-    s.send("hello world2")
-    msg = ""
-    while True:
-        try:
-            items = dict(poller.poll())
-        except:
-            break
+    tx_msg = "help me!!!"
+    req.send(tx_msg)
+    msg = rep.recv()
+    assert(msg == tx_msg)
+    assert(req.stats.msgs_tx == 1)
+    assert(rep.stats.msgs_rx == 1)
 
-        if c.socket in items:
-            msg = c.recv()
-            break
+    # send the response...
 
-    assert(msg == "hello world2")
+    tx_msg = "ok.. help is on the way!!!"
+    rep.send(tx_msg)
+
+    msg = req.recv()
+    assert(msg == tx_msg)
+    assert(rep.stats.msgs_tx == 1)
+    assert(req.stats.msgs_rx == 1)
+
+    # Create a client with a different header.  Verify the requests are
+    # dropped...
+    bad_req = Protocol(zmq.REQ, ["MYBADPROTO"])
+    bad_req.create_client("tcp", "127.0.0.1", 5678)
+
+    tx_msg = "help me!!!"
+    bad_req.send(tx_msg)
+    msg = rep.recv()
+    assert(msg is None)
+    assert(rep.stats.msgs_err_rx_bad_header == 1)
     print "PASSED"
 
 
 def test3():
-    # Simple test.  Create a single client and a single server.
-    # Send messages between them.
-    c = Protocol("SIMPLE_SERVICE", "ZMQ_SUB", ["SIMPLE!", "aabbcc"])
-    s = Protocol("SIMPLE_SERVICE", "ZMQ_PUB", ["SIMPLE!", "aabbcc"])
-    s.create_server("tcp://127.0.0.1:5678", discovery=False)
-    c.create_client("tcp://127.0.0.1:5678", "SIMPLE!")
 
-    # It is important to sleep for a period of time, otherwise the
-    # server will attempt to send out the message below before
-    # the subscription has been registered.
-    time.sleep(1)
-    s.send_multipart(["hello world", "bye"])
-    msg = c.recv_multipart()
-    assert(len(msg) == 2)
-    assert(msg[0] == "hello world")
-    assert(msg[1] == "bye")
+    # ROUTER
+    rtr = Protocol(zmq.ROUTER, ["MYPROTO"])
+    rtr.create_server("tcp", "127.0.0.1", [5678, 5690])
 
-    s.send_multipart([])
-    msg = c.recv_multipart()
-    assert(len(msg) == 0)
+    req = Protocol(zmq.REQ, ["MYPROTO"])
+    req.create_client("tcp", "127.0.0.1", 5678)
+
+    tx_msg = "help me!!!"
+    req.send(tx_msg)
+    msg = rtr.recv_multipart()
+
+    req_address = msg[0]
+    print "Address: " + req_address
+    assert(msg[1] == tx_msg)
+    assert(req.stats.msgs_tx == 1)
+    assert(rtr.stats.msgs_rx == 1)
+
+    # Send a response back to the requestor...
+    tx_msg = "get lost!!!"
+    rtr.send_multipart([req_address, tx_msg])
+    msg = req.recv()
+    assert(msg == tx_msg)
+    assert(rtr.stats.msgs_tx == 1)
+    assert(req.stats.msgs_rx == 1)
+
+    # Now, many requests...
+    req1 = Protocol(zmq.REQ, ["MYPROTO"])
+    req1.create_client("tcp", "127.0.0.1", 5678)
+    req2 = Protocol(zmq.REQ, ["MYPROTO"])
+    req2.create_client("tcp", "127.0.0.1", 5678)
+    req3 = Protocol(zmq.REQ, ["MYPROTO"])
+    req3.create_client("tcp", "127.0.0.1", 5678)
+
+    req1.send("req - 1")
+    req2.send("req - 2")
+    req3.send("req - 3")
+
+    i = 0
+    while i < 3:
+        msg = rtr.recv_multipart()
+        req_address = msg[0]
+        print "Address: " + req_address
+        rtr.send_multipart([req_address, msg[1]])
+        i += 1
+
+    msg = req1.recv()
+    assert(msg == "req - 1")
+    msg = req2.recv()
+    assert(msg == "req - 2")
+    msg = req3.recv()
+    assert(msg == "req - 3")
 
     print "PASSED"
 
 
 def test4():
-    # UDP client/server test
-    a = Protocol("SIMPLE_SERVICE", "UDP_BROADCAST", ["SIMPLE!"])
-    b = Protocol("SIMPLE_SERVICE", "UDP_BROADCAST", ["SIMPLE!"])
-    a.create_client("udp://255.255.255.255:3342")
-    b.create_client("udp://255.255.255.255:3342")
 
-    # It is important to sleep for a period of time, otherwise the
-    # server will attempt to send out the message below before
-    # the subscription has been registered.
-    time.sleep(1)
+    # ROUTER/DEALER
+    rtr = Protocol(zmq.ROUTER, ["MYPROTO"])
+    rtr.create_server("tcp", "127.0.0.1", [5678, 5690])
 
-    a.send("hello world")
-    time.sleep(1)
-    msg = b.recv()
-    assert(msg == "hello world")
+    dlr = Protocol(zmq.DEALER, ["MYPROTO"])
+    dlr.create_client("tcp", "127.0.0.1", 5678)
 
-    print "PASSED"
+    tx_msg = "help me!!!"
+    dlr.send(tx_msg)
+    msg = rtr.recv_multipart()
+    assert(msg is not None)
 
+    req_address = msg[0]
+    print "Address: " + req_address
+    assert(msg[1] == tx_msg)
+    assert(dlr.stats.msgs_tx == 1)
+    assert(rtr.stats.msgs_rx == 1)
 
-def test5():
-    # UDP client/server test
-    a = Protocol("SIMPLE_SERVICE", "UDP_BROADCAST", ["SIMPLE!"])
-    b = Protocol("SIMPLE_SERVICE", "UDP_BROADCAST", ["SIMPLE"])
-    a.create_client("udp://255.255.255.255:3342", "SIMPLE!")
-    b.create_client("udp://255.255.255.255:3342", "SIMPLE!")
+    # Many simulaneous requests now...
+    dlr1 = Protocol(zmq.DEALER, ["MYPROTO"])
+    dlr1.create_client("tcp", "127.0.0.1", 5678)
+    dlr2 = Protocol(zmq.DEALER, ["MYPROTO"])
+    dlr2.create_client("tcp", "127.0.0.1", 5678)
+    dlr3 = Protocol(zmq.DEALER, ["MYPROTO"])
+    dlr3.create_client("tcp", "127.0.0.1", 5678)
 
-    # It is important to sleep for a period of time, otherwise the
-    # server will attempt to send out the message below before
-    # the subscription has been registered.
-    time.sleep(1)
+    dlr1.send("dlr - 1")
+    dlr2.send("dlr - 2")
+    dlr3.send("dlr - 3")
 
-    a.send("hello world")
-    time.sleep(1)
-    msg = b.recv()
-    assert(msg == "hello world")
+    i = 0
+    while i < 3:
+        msg = rtr.recv_multipart()
+        req_address = msg[0]
+        print "Address: " + req_address
+        rtr.send_multipart([req_address, msg[1]])
+        i += 1
 
+    msg = dlr2.recv_multipart()
+    assert(msg[1] == "dlr - 2")
+    msg = dlr3.recv_multipart()
+    assert(msg[1] == "dlr - 3")
+    msg = dlr1.recv_multipart()
+    assert(msg[1] == "dlr - 1")
     print "PASSED"
 
 
 if __name__ == '__main__':
     test1()
-    #test2()
-    #test3()
-    #test4()
+    test2()
+    test3()
+    test4()

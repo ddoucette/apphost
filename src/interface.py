@@ -84,6 +84,7 @@ class Interface():
     def create_timer(self, timer_name, period):
         timer = InterfaceTimer(self, timer_name, period)
         self.timers.append(timer)
+        return timer
 
     def __intf_thread_entry(self):
         while self.alive:
