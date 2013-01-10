@@ -3,6 +3,7 @@
     This class provides basic socket connectivity for all ZMQ queue types.
 """
 import zmq
+import types
 from local_log import *
 
 
@@ -40,6 +41,7 @@ class Protocol():
     def __init__(self, socket_type, protocol_headers=[]):
 
         assert(socket_type in Protocol.socket_types)
+        assert(isinstance(protocol_headers, types.ListType))
 
         self.stats = Protocol.Stats()
         self.ctx = None
@@ -153,7 +155,7 @@ class Protocol():
         Llog.LogDebug("Subscribing to <" + subscription + ">")
         self.socket.setsockopt(zmq.SUBSCRIBE, subscription)
 
-    def recv_multipart(self):
+    def __recv_multipart(self):
         assert(self.socket is not None)
         assert(self.socket_type == zmq.ROUTER or
                self.socket_type == zmq.DEALER)
@@ -186,8 +188,7 @@ class Protocol():
                 return None
         return [address, msg]
 
-    def recv(self):
-        assert(self.socket is not None)
+    def __recv(self):
         assert(self.socket_type != zmq.ROUTER)
         assert(self.socket_type != zmq.DEALER)
 
@@ -209,7 +210,18 @@ class Protocol():
                 return None
         return msg
 
-    def send_multipart(self, msg):
+    def recv(self):
+        assert(self.socket is not None)
+
+        if self.socket_type == zmq.ROUTER or \
+           self.socket_type == zmq.DEALER:
+            msg = self.__recv_multipart()
+        else:
+            msg = self.__recv()
+        Llog.LogDebug("Receiving: " + str(msg))
+        return msg
+
+    def __send_multipart(self, msg):
         assert(self.socket is not None)
         assert(self.socket_type == zmq.ROUTER)
 
@@ -220,14 +232,13 @@ class Protocol():
         if len(self.protocol_headers) > 0:
             sendmsg = "".join(self.protocol_headers) + " " + msg[1]
         else:
-            sendmsg = msg
+            sendmsg = msg[1]
 
         Llog.LogDebug("Sending to " + msg[0] + " <" + sendmsg + ">")
         self.socket.send_multipart([msg[0], "", sendmsg])
         self.stats.msgs_tx += 1
 
-    def send(self, msg):
-        assert(self.socket is not None)
+    def __send(self, msg):
         assert(self.socket_type != zmq.ROUTER)
 
         if len(self.protocol_headers) > 0:
@@ -237,6 +248,14 @@ class Protocol():
         Llog.LogDebug("Sending... <" + sendmsg + ">")
         self.socket.send(sendmsg)
         self.stats.msgs_tx += 1
+
+    def send(self, msg):
+        assert(self.socket is not None)
+
+        if self.socket_type == zmq.ROUTER:
+            self.__send_multipart(msg)
+        else:
+            self.__send(msg)
 
 
 def test1():
@@ -337,7 +356,7 @@ def test3():
 
     tx_msg = "help me!!!"
     req.send(tx_msg)
-    msg = rtr.recv_multipart()
+    msg = rtr.recv()
 
     req_address = msg[0]
     print "Address: " + req_address
@@ -347,7 +366,7 @@ def test3():
 
     # Send a response back to the requestor...
     tx_msg = "get lost!!!"
-    rtr.send_multipart([req_address, tx_msg])
+    rtr.send([req_address, tx_msg])
     msg = req.recv()
     assert(msg == tx_msg)
     assert(rtr.stats.msgs_tx == 1)
@@ -367,10 +386,10 @@ def test3():
 
     i = 0
     while i < 3:
-        msg = rtr.recv_multipart()
+        msg = rtr.recv()
         req_address = msg[0]
         print "Address: " + req_address
-        rtr.send_multipart([req_address, msg[1]])
+        rtr.send([req_address, msg[1]])
         i += 1
 
     msg = req1.recv()
@@ -394,7 +413,7 @@ def test4():
 
     tx_msg = "help me!!!"
     dlr.send(tx_msg)
-    msg = rtr.recv_multipart()
+    msg = rtr.recv()
     assert(msg is not None)
 
     req_address = msg[0]
@@ -417,17 +436,17 @@ def test4():
 
     i = 0
     while i < 3:
-        msg = rtr.recv_multipart()
+        msg = rtr.recv()
         req_address = msg[0]
         print "Address: " + req_address
-        rtr.send_multipart([req_address, msg[1]])
+        rtr.send([req_address, msg[1]])
         i += 1
 
-    msg = dlr2.recv_multipart()
+    msg = dlr2.recv()
     assert(msg[1] == "dlr - 2")
-    msg = dlr3.recv_multipart()
+    msg = dlr3.recv()
     assert(msg[1] == "dlr - 3")
-    msg = dlr1.recv_multipart()
+    msg = dlr1.recv()
     assert(msg[1] == "dlr - 1")
     print "PASSED"
 
