@@ -15,14 +15,22 @@ class Llog():
     ERROR = "E"
     INFO = "I"
     DEBUG = "D"
+    DEFAULT = "D"
     log_inst = None
 
     def __init__(self, verbose=True):
         assert(Llog.log_inst is None)
         self.verbose = verbose
+        self.level = Llog.DEFAULT
         Llog.log_inst = self
 
     def __print_msg(self, level, filename, line, msg):
+        assert(level in ["E", "I", "D"])
+        levels = {'E':1, 'I':2, 'D':3}
+
+        if levels[level] > levels[self.level]:
+            return
+
         logmsg = time.strftime("%x-%X") + " <" + level + ">"
         if self.verbose is True:
             logmsg = logmsg + "(" + filename + ":" + line + ")"
@@ -58,6 +66,13 @@ class Llog():
         if Llog.log_inst is None:
             Llog.log_inst = Llog()
         Llog.log_inst.log_msg("D", "O", msg)
+
+    @staticmethod
+    def SetLevel(level):
+        assert(level in ["E", "I", "D"])
+        if Llog.log_inst is None:
+            Llog.log_inst = Llog()
+        Llog.log_inst.level = level
 
 
 def test1():
