@@ -43,8 +43,13 @@ class UDP:
         return self.socket.recv(MAX_RECV)
 
     def recv_noblock(self):
+        return recv_timeout(0)
+
+    def recv_timeout(self, timeout):
         assert(self.socket)
-        (ready_read, ready_write, in_error) = select.select([self.socket], [], [], 0)
+        assert(timeout >= 0)
+
+        (ready_read, ready_write, in_error) = select.select([self.socket], [], [], timeout)
 
         for socket in ready_read:
             if socket == self.socket:

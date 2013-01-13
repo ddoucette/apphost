@@ -12,106 +12,94 @@ import threading
 import time
 import zmq
 import zhelpers
-from override import *
+import types
+import protocol
 
 
 class Interface():
 
     """
     """
-    def __init__(self,
-                    protocol_type=None,
-                    protocol_location="",
-                    protocol_bind=False):
+    def __init__(self):
         self.ctx = zmq.Context.instance()
         self.in_pipe = zhelpers.zpipe(self.ctx)
-        self.out_pipe = zhelpers.zpipe(self.ctx)
         self.poller = zmq.Poller()
         self.poller.register(self.in_pipe[1], zmq.POLLIN)
         self.alive = True
-        self.timers = []
+        self.protocol = None
+        self.protocol_cback = None
 
-        # Check to see if the caller has specified parameters
-        # for the protocol socket.  If so, create and bind/connect
-        # the socket and add it to the pollers list
-        if protocol_type is not None and protocol_location != "":
-            print "Creating a protocol socket for: " + protocol_location
-            self.protocol_socket = self.ctx.socket(protocol_type)
-            if protocol_bind is True:
-                print "Binding socket for: " + protocol_location
-                self.protocol_socket.bind(protocol_location)
-            else:
-                self.protocol_socket.connect(protocol_location)
-            self.poller.register(self.protocol_socket, zmq.POLLIN)
-        else:
-            self.protocol_socket = None
-
-        self.thread = threading.Thread(target=self.__intf_thread_entry)
+        self.thread = threading.Thread(target=self.__thread_entry)
         self.thread.daemon = True
 
     def __del__(self):
         self.close()
 
+    def set_protocol(self, protocol, protocol_cback):
+        assert(self.protocol is None)
+        assert(protocol.get_socket() is not None)
+        self.protocol = protocol
+        self.protocol_cback = protocol_cback
+        self.poller.register(protocol.get_socket(), zmq.POLLIN)
+        self.thread.start()
+
+    def push_in_msg(self, msg):
+        if isinstance(msg, types.ListType):
+            intf_msg = ["MESSAGE"] + msg
+        else:
+            intf_msg = ["MESSAGE", msg]
+        self.__push_in_msg_raw(intf_msg)
+
     def close(self):
-        # Close our discovery service
-        if self.discovery is not None:
-            self.discovery.close()
-
-        self.discovery = None
-
-        # Close all the timers
-        for timer in self.timers:
-            timer.close()
 
         # Send the KILL command to the interface thread.
         msg = ["KILL"]
-        self.push_in_msg_raw(msg)
+        self.__push_in_msg_raw(msg)
 
         # We have sent the KILL message, now wait for the thread
         # to complete
-        iterations = 20
+        iterations = 10
         while self.alive is True and iterations > 0:
             try:
                 time.sleep(0.5)
             except:
                 print "ERROR: Interface has not cleaned up!  Exiting anyway!"
                 break
-            iterations = iterations - 1
+            iterations -= 1
 
-    def start(self):
-        self.thread.start()
-
-    def create_timer(self, timer_name, period):
-        timer = InterfaceTimer(self, timer_name, period)
-        self.timers.append(timer)
-        return timer
-
-    def __intf_thread_entry(self):
-        while self.alive:
+    def __thread_entry(self):
+        # This is the one and only interface processing thread.
+        # This thread pulls all messages from the interface command
+        # queue and processes them.  It also pulls messages from
+        # the protocol message queue and processes them.
+        while self.alive is True:
             items = dict(self.poller.poll())
             if self.in_pipe[1] in items:
-                self.__process_pipes()
+                self.__process_pipe()
+            elif self.protocol.get_socket() in items:
+                self.__process_protocol()
+            else:
+                assert(False)
 
-            if self.protocol_socket in items:
-                self.__process_socket()
+    def __process_protocol(self):
+        assert(self.protocol is not None)
+        msg = self.protocol.recv()
+        if msg is None:
+            return
 
-    def __process_socket(self):
-        msg = self.protocol_socket.recv_multipart()
-        assert(len(msg) >= 1)
-        self.process_protocol(msg)
+        assert(self.protocol_cback is not None)
+        self.protocol_cback(msg)
 
-    def __process_pipes(self):
+    def __process_pipe(self):
         msg = self.in_pipe[1].recv_multipart()
+        assert(msg is not None)
         assert(len(msg) >= 1)
 
         # In the interface layer, there are only a few valid
         # message types:
         #  MESSAGE - protocol message
         #  KILL - kill message
-        #  TIMER - timer message
         if msg[0] == "KILL":
-            self.process_kill()
-
             # We are finished.  Just get out of the thread.
             self.alive = False
             return
@@ -119,86 +107,71 @@ class Interface():
             assert(len(msg) >= 2)
             # Strip off our 'MESSAGE' header and forward the message
             # to the interface implementation
-            msg.pop(0)
-            self.process_msg(msg)
-        elif msg[0] == "TIMER":
-            assert(len(msg) == 2)
-            self.process_timer(msg[1])
+            # The message can be either a list of strings forming a
+            # multipart message, or it can be just a string to send.
+            # We need to inspect the message list further to see.
+            if len(msg) > 2:
+                # This is a multipart message.  Be sure to keep the list
+                # format and forward the message after removing the
+                # 'MESSAGE' header...
+                msg.pop(0)
+            else:
+                msg = str(msg[1])
+
+            if self.protocol is not None:
+                self.protocol.send(msg)
         else:
+            Llog.LogError("Invalid message header! (" + msg[0] + ")")
             assert(False)
 
-    """
-        process_protocol.
-        Method is meant to be overridden by the inheriting class to provide
-        protocol processing capabilities.
-    """
-    def process_protocol(self):
-        assert(False)
-
-    """
-        process_msg interface method.  This is where the inheriting class
-        will do its message processing work inside the thread.
-    """
-    def process_msg(self, msg):
-        assert(False)
-
-    """
-        process_timer interface method.  This method must be overwritten
-        by the inheriting class, if timers are used.
-    """
-    def process_timer(self, timer):
-        assert(False)
-
-    """
-        process_kill interface method.  This method allows the inheriting class
-        to process the object's kill event.  Any cleanup which
-        must be done should be done here.
-    """
-    def process_kill(self):
-        pass
-
-    def push_in_msg_raw(self, msg):
+    def __push_in_msg_raw(self, msg):
+        assert(isinstance(msg, types.ListType))
         self.in_pipe[0].send_multipart(msg)
 
-    def push_in_msg(self, msg):
-        assert(len(msg) > 0)
-        msg.insert(0, "MESSAGE")
-        self.push_in_msg_raw(msg)
 
-    def pull_out_msg(self):
-        msg = self.out_pipe[1].recv_multipart()
-        assert(len(msg) >= 1)
-        return msg
+def test1():
 
-    def __push_out_msg(self, msg):
-        self.out_pipe[0].send_multipart(msg)
+    class MyServer():
+        def __init__(self, name, port):
+            self.name = name
+            self.proto = protocol.Protocol(zmq.ROUTER, ["MYPROTO"])
+            self.proto.create_server("tcp", "127.0.0.1", [port])
+            self.interface = Interface()
+            self.interface.set_protocol(self.proto, self.handle_proto_req)
+
+        def handle_proto_req(self, msg):
+            print "Received from " + str(msg[0]) + " : " + msg[1]
+            self.interface.push_in_msg([msg[0], msg[1] + " ok"])
+
+    class MyClient():
+        def __init__(self, name, port):
+            self.name = name
+            self.proto = protocol.Protocol(zmq.REQ, ["MYPROTO"])
+            self.proto.create_client("tcp", "127.0.0.1", port)
+            self.interface = Interface()
+            self.interface.set_protocol(self.proto, self.handle_proto_msg)
+            self.done = False
+
+        def handle_proto_msg(self, msg):
+            print "Response: " + msg
+            
+            (name, sep, msg) = msg.partition(" ")
+            assert(name == self.name)
+            (msg, sep, ok) = msg.rpartition(" ")
+            assert(ok == "ok")
+            self.done = True
+
+        def do_something(self):
+            self.interface.push_in_msg(self.name + " - do - something")
+
+    s = MyServer("srv", 5000)
+    c = MyClient("cli", 5000)
+
+    c.do_something()
+    time.sleep(1)
+    assert(c.done is True)
+    print "PASSED"
 
 
-class InterfaceTimer():
-
-    """
-        InterfaceTimer object.  Contains the wrapper implementation
-        of an interface timer.
-        When the timer goes off, it simply sends a timer message to
-        the interface.
-    """
-    def __init__(self, interface, name, period):
-        self.name = name
-        self.period = period
-        self.interface = interface
-        self.discovery = None
-        self.alive = True
-        self.timer = threading.Timer(period, self.__timer_handler)
-        self.timer.start()
-
-    def __timer_handler(self):
-        msg = ["TIMER", self.name]
-        self.interface.push_in_msg_raw(msg)
-        # Re-schedule the timer...
-        if self.alive is True:
-            self.timer = threading.Timer(self.period, self.__timer_handler)
-            self.timer.start()
-
-    def close(self):
-        self.alive = False
-        self.timer.cancel()
+if __name__ == '__main__':
+    test1()
