@@ -35,7 +35,7 @@ class Interface():
     def __del__(self):
         self.close()
 
-    def set_protocol(self, protocol, protocol_cback):
+    def set_protocol(self, protocol, protocol_cback=None):
         assert(self.protocol is None)
         assert(protocol.get_socket() is not None)
         self.protocol = protocol
