@@ -1,54 +1,63 @@
 """
     Interface class.
-    This class provides basic messaging and threading functionality for
-    a protocol block.  This class provides a message layer to isolate
-    API calls from the core thread processing.
-    This class also provides functionality to ensure no messsages are lost
-    during cleanup of the owning object.
-    This class is designed to be inherited as an abstract class by the
-    final protocol classes.
+    Provides basic threading functionality to enable processing
+    of received messages from 1 or more sockets, and processing
+    of commands from the protocol API layer.
 """
 import threading
 import time
 import zmq
 import zhelpers
 import types
-import protocol
+import zsocket
 
 
 class Interface():
 
     """
     """
-    def __init__(self):
+    def __init__(self, protocol_rx_cback):
+        assert(protocol_rx_cback is not None)
+
         self.ctx = zmq.Context.instance()
         self.in_pipe = zhelpers.zpipe(self.ctx)
         self.poller = zmq.Poller()
         self.poller.register(self.in_pipe[1], zmq.POLLIN)
         self.alive = True
-        self.protocol = None
-        self.protocol_cback = None
+        self.sockets = []
+        self.protocol_rx_cback = protocol_rx_cback
 
         self.thread = threading.Thread(target=self.__thread_entry)
         self.thread.daemon = True
+        self.thread.start()
 
     def __del__(self):
         self.close()
 
-    def set_protocol(self, protocol, protocol_cback=None):
-        assert(self.protocol is None)
-        assert(protocol.get_socket() is not None)
-        self.protocol = protocol
-        self.protocol_cback = protocol_cback
-        self.poller.register(protocol.get_socket(), zmq.POLLIN)
-        self.thread.start()
+    def add_socket(self, zsocket):
+        assert(zsocket is not None)
+        assert(zsocket not in self.sockets)
+        assert(zsocket.socket is not None)
 
+        self.sockets.append(zsocket)
+        self.poller.register(zsocket.socket, zmq.POLLIN)
+
+    def remove_socket(self, zsocket):
+        assert(zsocket in self.sockets)
+
+        for index, socket in self.sockets:
+            if socket == zsocket:
+                self.sockets.pop(index)
+                return
+
+    # Send a message to the interface thread from the API layer
     def push_in_msg(self, msg):
-        if isinstance(msg, types.ListType):
-            intf_msg = ["MESSAGE"] + msg
+        if isinstance(msg, types.ListType) is True:
+            cmd = ["MSG", ''] + msg
         else:
-            intf_msg = ["MESSAGE", msg]
-        self.__push_in_msg_raw(intf_msg)
+            cmd = ["MSG", msg]
+
+        self.__push_in_msg_raw(cmd)
 
     def close(self):
 
@@ -73,53 +82,61 @@ class Interface():
         # queue and processes them.  It also pulls messages from
         # the protocol message queue and processes them.
         while self.alive is True:
-            items = dict(self.poller.poll())
-            if self.in_pipe[1] in items:
-                self.__process_pipe()
-            elif self.protocol.get_socket() in items:
-                self.__process_protocol()
-            else:
-                assert(False)
+            items = dict(self.poller.poll(1000))
 
-    def __process_protocol(self):
-        assert(self.protocol is not None)
-        msg = self.protocol.recv()
+            if self.in_pipe[1] in items:
+                self.__process_command_pipe()
+            else:
+                # Check to see if any of our sockets are now readable
+                for zsocket in self.sockets:
+                    if zsocket.socket in items:
+                        self.__process_socket(zsocket)
+
+    def __process_socket(self, socket):
+        msg = socket.recv()
         if msg is None:
             return
+        self.protocol_rx_cback(msg)
 
-        assert(self.protocol_cback is not None)
-        self.protocol_cback(msg)
+    def __process_command_pipe(self):
 
-    def __process_pipe(self):
         msg = self.in_pipe[1].recv_multipart()
         assert(msg is not None)
-        assert(len(msg) >= 1)
+        assert(len(msg) >= 2)
 
         # In the interface layer, there are only a few valid
         # message types:
-        #  MESSAGE - protocol message
+        #  MSG - protocol message
         #  KILL - kill message
+        #
+        #  The format of all multi-part commands are:
+        #   ['CMDSTR', '', 'msgpart', 'msgpart', ...]
+        #  The format of all string commands are:
+        #   ['CMDSTR', 'msg-string']
+
         if msg[0] == "KILL":
             # We are finished.  Just get out of the thread.
             self.alive = False
             return
-        elif msg[0] == "MESSAGE":
-            assert(len(msg) >= 2)
-            # Strip off our 'MESSAGE' header and forward the message
-            # to the interface implementation
-            # The message can be either a list of strings forming a
-            # multipart message, or it can be just a string to send.
-            # We need to inspect the message list further to see.
-            if len(msg) > 2:
-                # This is a multipart message.  Be sure to keep the list
-                # format and forward the message after removing the
-                # 'MESSAGE' header...
-                msg.pop(0)
-            else:
-                msg = str(msg[1])
+        elif msg[0] == "MSG":
 
-            if self.protocol is not None:
-                self.protocol.send(msg)
+            # Check to verify we have 1, and only 1 socket.
+            # We support multiple sockets, so it gets a bit
+            # difficult to decide which socket to send the message
+            # to.
+            assert(len(self.sockets) == 1)
+
+            if len(msg) == 2:
+                # String-based message
+                msgtxt = str(msg[1])
+                print "Sending: " + msgtxt
+                msg = msgtxt
+            else:
+                msg = msg[2:]
+                print "Sending: " + str(msg)
+
+            self.sockets[0].send(msg)
+
         else:
             Llog.LogError("Invalid message header! (" + msg[0] + ")")
             assert(False)
@@ -134,22 +151,32 @@ def test1():
     class MyServer():
         def __init__(self, name, port):
             self.name = name
-            self.proto = protocol.Protocol(zmq.ROUTER, ["MYPROTO"])
-            self.proto.create_server("tcp", "127.0.0.1", [port])
-            self.interface = Interface()
-            self.interface.set_protocol(self.proto, self.handle_proto_req)
+            server = zsocket.ZSocketServer(zmq.ROUTER,
+                                           "tcp",
+                                           "*",
+                                           [port],
+                                           ["MYPROTO"])
+            server.bind()
+            self.interface = Interface(self.handle_proto_req)
+            self.interface.add_socket(server)
 
         def handle_proto_req(self, msg):
-            print "Received from " + str(msg[0]) + " : " + msg[1]
-            self.interface.push_in_msg([msg[0], msg[1] + " ok"])
+            address, msgtxt = msg[0:2]
+            print "Received from " + str(address) + " : " + msgtxt
+            msgtxt += " ok"
+            self.interface.push_in_msg([address, msgtxt])
 
     class MyClient():
         def __init__(self, name, port):
             self.name = name
-            self.proto = protocol.Protocol(zmq.REQ, ["MYPROTO"])
-            self.proto.create_client("tcp", "127.0.0.1", port)
-            self.interface = Interface()
-            self.interface.set_protocol(self.proto, self.handle_proto_msg)
+            client = zsocket.ZSocketClient(zmq.REQ,
+                                           "tcp",
+                                           "127.0.0.1",
+                                           port,
+                                           ["MYPROTO"])
+            client.connect()
+            self.interface = Interface(self.handle_proto_msg)
+            self.interface.add_socket(client)
             self.done = False
 
         def handle_proto_msg(self, msg):
@@ -168,7 +195,7 @@ def test1():
     c = MyClient("cli", 5000)
 
     c.do_something()
-    time.sleep(1)
+    time.sleep(5)
     assert(c.done is True)
     print "PASSED"
 
