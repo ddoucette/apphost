@@ -130,6 +130,7 @@ class EventSource():
 
     @staticmethod
     def Create(event_name, event_type):
+        assert(EventSource.zsocket is not None)
         return EventSource(event_name, event_type)
 
 
@@ -140,6 +141,9 @@ class EventCollector():
                        user_name="",
                        application_name=""):
         assert(event_cback is not None)
+        assert(isinstance(event_cback, types.FunctionType) or
+               isinstance(event_cback, types.MethodType))
+        assert(isinstance(event_types, types.ListType))
 
         for event_type in event_types:
             assert(event_type in EventSource.event_types)
@@ -154,59 +158,83 @@ class EventCollector():
                                             self.service_remove)
 
     def msg_cback(self, msg):
-        pieces = msg.split()
-        if len(pieces) < 6:
-            Llog.LogError("Invalid EVENT message received! <" + msg + ">")
+
+        event_type, sep, msg = msg.partition(" ")
+        if event_type not in EventSource.event_types:
+            Llog.LogError("Invalid event type received!: " + event_type)
             return
 
-        event_type = pieces[0]
-        event_name = pieces[1]
-        timestamp = pieces[2]
-        user_name = pieces[3]
-        application_name = pieces[4]
-        contents = pieces[5]
+        event_name, sep, msg = msg.partition(" ")
+        if event_name == "":
+            Llog.LogError("Invalid event name received!")
+            return
 
-        if event_type not in self.event_types:
-            Llog.LogError("Received event type <"
-                          + event_type + "> without a subscription!")
+        timestamp, sep, msg = msg.partition(" ")
+        if timestamp == "":
+            Llog.LogError("Invalid timestamp received!")
+            return
+
+        user_name, sep, msg = msg.partition(" ")
+        if user_name == "":
+            Llog.LogError("Invalid user name received!")
+            return
+
+        app_name, sep, msg = msg.partition(" ")
+        if app_name == "":
+            Llog.LogError("Invalid application name received!")
             return
 
         event = {'type': event_type,
                  'name': event_name,
                  'timestamp': timestamp,
                  'user_name': user_name,
-                 'application_name': application_name,
-                 'contents': contents}
+                 'application_name': app_name,
+                 'contents': msg}
         self.event_cback(event)
 
     def service_add(self, service):
-        if service.service_name == "EVENT" and \
-           service.user_name == self.user_name:
-            if service.application_name != "" and \
-                service.application_name != self.application_name:
-                # service is for another user
+        # We have received a service location broadcast
+        # message.  We now have to decide whether it is
+        # an EVENT service, and if we would like to subscribe
+        # to it, given our username and app_name settings.
+        # If we have an empty username and/or appname, we
+        # will subscribe to every EVENT service.
+        
+        if service.service_name != "EVENT":
+            return
+
+        if self.user_name != "":
+            # We have been configured with a non-empty username.
+            # Only subscribe to the service if it matches.
+            if service.user_name != self.user_name:
                 return
 
-            # We have found a matching service.  We must now get
-            # the location of this service and open up a SUB socket
-            # to it.  Once open, we must subscribe to the events
-            # of interest.
-            Llog.LogInfo("Found service: " + str(service))
-
-            addr_info = location.parse_location(service.location)
-            if addr_info is None:
-                Llog.LogError("Invalid location: " + service.location)
+        if self.application_name != "":
+            # We have been configured with a non-empty appname.
+            # Only subscribe to the service if it matches.
+            if service.application_name != self.application_name:
                 return
 
-            zsock = zsocket.ZSocketClient(zmq.SUB,
-                                          "tcp",
-                                          addr_info['address'],
-                                          addr_info['port'])
-            assert(zsock is not None)
-            zsock.connect()
-            self.interface.add_socket(zsock)
-            for event_type in self.event_types:
-                zsock.subscribe(str(event_type))
+        # We have found a matching service.  We must now get
+        # the location of this service and open up a SUB socket
+        # to it.  Once open, we must subscribe to the events
+        # of interest.
+        Llog.LogInfo("Subscribing to EVENT source: " + str(service))
+
+        addr_info = location.parse_location(service.location)
+        if addr_info is None:
+            Llog.LogError("Invalid location: " + service.location)
+            return
+
+        zsock = zsocket.ZSocketClient(zmq.SUB,
+                                      "tcp",
+                                      addr_info['address'],
+                                      addr_info['port'])
+        assert(zsock is not None)
+        zsock.connect()
+        self.interface.add_socket(zsock)
+        for event_type in self.event_types:
+            zsock.subscribe(str(event_type))
 
     def service_remove(self, service):
         zsocket = self.interface.find_socket_by_location(service.location)
@@ -363,6 +391,6 @@ if __name__ == '__main__':
 
     EventSource.Init(user_name, app_name)
 
-    #test1()
-    #test2()
+    test1()
+    test2()
     test3()

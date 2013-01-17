@@ -47,10 +47,15 @@ class Interface():
     def remove_socket(self, zsocket):
         assert(zsocket in self.sockets)
 
-        for index, socket in self.sockets:
+        for index, socket in enumerate(self.sockets):
             if socket == zsocket:
+                self.poller.unregister(zsocket.socket)
                 self.sockets.pop(index)
                 return
+
+        Llog.LogError("Cannot find socket: <"
+                      + str(zsocket) + "> in registered socket list!")
+        assert(False)
 
     # Send a message to the interface thread from the API layer
     def push_in_msg(self, msg):
@@ -87,7 +92,19 @@ class Interface():
         # queue and processes them.  It also pulls messages from
         # the protocol message queue and processes them.
         while self.alive is True:
-            items = dict(self.poller.poll(1000))
+            try:
+                items = dict(self.poller.poll(1000))
+            except zmq.ZMQError:
+                # We will see ZMQErrors from time to time.
+                # These are generally the result of removing
+                # sockets from the poll list (unregistering)
+                # from different thread contexts.
+                # The poll implementation will wait for the timeout
+                # period, then attempt to operate on all registered
+                # sockets.  If we remove one during the timeout
+                # sleep, it will cause an error.
+                # We just ignore the error here.
+                items = {}
 
             if self.in_pipe[1] in items:
                 self.__process_command_pipe()

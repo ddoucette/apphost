@@ -14,13 +14,16 @@ class DiscoveryServer:
 
     """
     """
+
+    period = 10
+    ageout = 40
+
     # Optional argument to specify how often this module will
     # output a discovery beacon packet, in units of seconds.
     def __init__(self, user_name,
                        application_name,
                        service_name,
-                       service_location,
-                       period=10):
+                       service_location):
         assert(user_name != "")
         assert(application_name != "")
         assert(service_name != "")
@@ -35,7 +38,7 @@ class DiscoveryServer:
         self.service_location = service_location
         self.uuid = uuid.uuid4()
         self.udp = udplib.UDP()
-        self.period = period
+        self.period = DiscoveryServer.period
 
         # Verify the location makes sense, syntactically
         location_check = location.check_location(service_location)
@@ -96,7 +99,7 @@ class DiscoveryService:
                          self.location,
                          self.uuid])
 
-    def equals(self, service):
+    def __eq__(self, service):
         if self.user_name == service.user_name and \
            self.application_name == service.application_name and \
            self.service_name == service.service_name and \
@@ -108,15 +111,17 @@ class DiscoveryClient:
 
     """
     """
+    ageout = 40
+
     # ageout - optional argument to specify how long before an entry
     #          discovered will be removed from our list if another beacon
     #          for it is not received.
-    def __init__(self, service_add_cback, service_remove_cback, ageout=40):
+    def __init__(self, service_add_cback, service_remove_cback):
         assert(service_add_cback is not None)
         assert(service_remove_cback is not None)
 
         self.udp = udplib.UDP()
-        self.ageout = ageout
+        self.ageout = DiscoveryClient.ageout
         self.alive = True
         self.service_add_cback = service_add_cback
         self.service_remove_cback = service_remove_cback
@@ -130,11 +135,21 @@ class DiscoveryClient:
             self.__recv_beacons()
             self.__process_discovery_list()
 
+    def __del__(self):
+        self.close()
+
+    def close(self):
+        self.alive = False
+        # We need to wait for a few seconds to allow the main thread
+        # enough time to re-read the alive flag and exit
+        time.sleep(5)
+
     def __process_discovery_list(self):
         # check each entry in our discovered services list to
         # see if any entries are too old to keep around
         now = time.time()
-        for service in self.discovered_service_list[:]:
+        service_list = self.discovered_service_list[:]
+        for service in service_list:
             if service.time < now - self.ageout:
                 # The entry is too old.  Dump it
                 self.service_remove_cback(service)
@@ -215,7 +230,7 @@ class DiscoveryClient:
 
     def find_discovered_service(self, service):
         for discovered_service in self.discovered_service_list:
-            if discovered_service.equals(service) is True:
+            if discovered_service == service:
                 if discovered_service.uuid != service.uuid:
                     # We have just found a service which has the same
                     # name and location, but different UUID.  This is
@@ -225,7 +240,7 @@ class DiscoveryClient:
                     # Just replace the service UUID with the new one.
                     Llog.LogInfo("UUID mismatch for service <" + str(service)
                                  + ">.  Updating service entry with new UUID.")
-                    service.uuid = service_uuid
+                    discovered_service.uuid = service.uuid
                 return service
         return None
 
@@ -238,12 +253,12 @@ def test1():
 
         def service_add(self, service):
             Llog.LogInfo("Discovered service (" + str(service) + ")")
-            if self.service.equals(service):
+            if self.service == service:
                 Llog.LogInfo("Found our service!")
                 self.service_found = True
 
         def service_remove(self, service):
-            match = self.service.equals(service)
+            match = self.service == service
             if match is True:
                 self.service_found = False
 
@@ -261,10 +276,11 @@ def test1():
     dc = DiscoveryClient(t.service_add, t.service_remove)
 
     # Discovery server with a beacon output period of 5 seconds
+    DiscoveryServer.period = 5
     ds = DiscoveryServer(user_name,
                          application_name,
                          service_name,
-                         service_location, 5)
+                         service_location)
     time.sleep(6)
 
     assert(t.service_found is True)
