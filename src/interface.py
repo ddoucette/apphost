@@ -16,8 +16,7 @@ class Interface():
 
     """
     """
-    def __init__(self, protocol_rx_cback):
-        assert(protocol_rx_cback is not None)
+    def __init__(self, protocol_rx_cback=None):
 
         self.ctx = zmq.Context.instance()
         self.in_pipe = zhelpers.zpipe(self.ctx)
@@ -31,9 +30,6 @@ class Interface():
         self.thread.daemon = True
         self.thread.start()
 
-    def __del__(self):
-        self.close()
-
     def add_socket(self, zsocket):
         assert(zsocket is not None)
         assert(zsocket not in self.sockets)
@@ -41,6 +37,12 @@ class Interface():
 
         self.sockets.append(zsocket)
         self.poller.register(zsocket.socket, zmq.POLLIN)
+
+    def find_socket_by_location(self, location):
+        for socket in self.sockets:
+            if socket.location == location:
+                return socket
+        return None
 
     def remove_socket(self, zsocket):
         assert(zsocket in self.sockets)
@@ -60,6 +62,9 @@ class Interface():
         self.__push_in_msg_raw(cmd)
 
     def close(self):
+
+        if self.in_pipe is None:
+            return
 
         # Send the KILL command to the interface thread.
         msg = ["KILL"]
@@ -96,6 +101,7 @@ class Interface():
         msg = socket.recv()
         if msg is None:
             return
+        assert(self.protocol_rx_cback)
         self.protocol_rx_cback(msg)
 
     def __process_command_pipe(self):
@@ -181,7 +187,7 @@ def test1():
 
         def handle_proto_msg(self, msg):
             print "Response: " + msg
-            
+
             (name, sep, msg) = msg.partition(" ")
             assert(name == self.name)
             (msg, sep, ok) = msg.rpartition(" ")

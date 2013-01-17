@@ -5,6 +5,7 @@ Helper module for example applications. Mimics ZeroMQ Guide's zhelpers.h.
 
 import binascii
 import os
+import socket
 from random import randint
 
 import zmq

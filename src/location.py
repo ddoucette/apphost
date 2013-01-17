@@ -25,7 +25,9 @@ def parse_location(service_location):
     service_protocol = m.group(1)
     service_address = m.group(2)
     service_port = int(m.group(3))
-    return [service_protocol, service_address, service_port]
+    return {'protocol_name': service_protocol,
+            'address': service_address,
+            'port': service_port}
 
 
 def check_location(service_location):
@@ -33,6 +35,11 @@ def check_location(service_location):
         return True
     return False
 
+def create_location(protocol_name, address, port):
+    service_location = protocol_name + "://" \
+                         + address \
+                         + ":" + str(port)
+    return service_location
 
 def test1():
     r = check_location("tcp://localhost:4321")

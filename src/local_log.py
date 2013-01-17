@@ -39,6 +39,7 @@ class Llog():
 
     def log_msg(self, level, msgtype, string):
         filename = inspect.stack()[2][1]
+        before, sep, filename = filename.rpartition('/')
         line = str(inspect.stack()[2][2])
         logmsg = ["LOG", level, msgtype, filename, line, string]
         self.__print_msg(level, filename, line, string)

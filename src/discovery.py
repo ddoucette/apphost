@@ -53,6 +53,9 @@ class DiscoveryServer:
         if self.alive is True:
             Llog.LogDebug(str(self) + " closing...")
             self.alive = False
+            # Give it some time to die.  The thread must have a chance
+            # to process the 'alive' value and exit
+            time.sleep(self.period)
 
     def __thread_entry(self):
         while self.alive:
