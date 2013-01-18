@@ -25,18 +25,25 @@ class Log():
     INFO = "INFO"
     DEBUG = "DEBUG"
     log_levels = [ERROR, INFO, DEBUG]
-
+    default_level = INFO
+    
     def __init__(self, name):
         # A log instance is basically just an event instance
         # with the addition of log levels and file info pushed
         # into the event context.
 
+        self.level = Log.default_level
         self.name = name
         self.event = event.EventSource.Create(name, event.EventSource.LOG)
         assert(self.event is not None)
 
     def __log_msg(self, level, logmsg):
         assert(level in Log.log_levels)
+
+        # Check to see if the log level of this log message is high
+        # enough to proceed
+        if Log.log_levels.index(level) > Log.log_levels.index(self.level):
+            return
 
         stack = inspect.stack()
         filename = stack[2][1]
@@ -59,6 +66,11 @@ class Log():
     def log_debug(self, logmsg):
         self.__log_msg(Log.DEBUG, logmsg)
 
+    def set_level(self, level):
+        assert(level in Log.log_levels)
+
+        self.level = level
+        
 
 class LogCollector():
 
