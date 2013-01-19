@@ -80,7 +80,7 @@ class Interface():
         iterations = 10
         while self.alive is True and iterations > 0:
             try:
-                time.sleep(0.5)
+                time.sleep(1)
             except:
                 print "ERROR: Interface has not cleaned up!  Exiting anyway!"
                 break

@@ -34,7 +34,7 @@ import types
 from local_log import *
 
 
-class EventSource():
+class EventSource(object):
 
     """
     """
@@ -42,8 +42,9 @@ class EventSource():
     BOOLEAN = "BOOLEAN"
     VALUE = "VALUE"
     STRING = "STRING"
+    VITAL = "VITAL"
 
-    event_types = [LOG, BOOLEAN, VALUE, STRING]
+    event_types = [LOG, BOOLEAN, VALUE, STRING, VITAL]
 
     port_range = [7000, 8000]
 
@@ -57,10 +58,18 @@ class EventSource():
     def __init__(self, event_name, event_type):
         assert(event_type in EventSource.event_types)
         assert(event_name is not None)
+
+        # Make sure the EventSource base class has been
+        # initialized
+        if EventSource.user_name == "":
+            print "EventSource base class has not been initialized!"
+            print "EventSource.Init() must be called first!"
+            assert(False)
+
         self.event_type = event_type
         self.event_name = event_name
 
-    def __create_event_msg(self):
+    def create_event_msg(self):
 
         timestamp = time.strftime("%x-%X")
         msg = " ".join([self.event_type,
@@ -72,26 +81,26 @@ class EventSource():
 
     def send_value(self, value):
         assert(self.event_type == EventSource.VALUE)
-        msg = self.__create_event_msg()
+        msg = self.create_event_msg()
         msg = " ".join([msg, str(value)])
         self.interface.push_in_msg(msg)
 
     def send_log(self, contents):
         assert(self.event_type == EventSource.LOG)
-        msg = self.__create_event_msg()
+        msg = self.create_event_msg()
         msg = " ".join([msg, contents])
         self.interface.push_in_msg(msg)
 
     def send_boolean(self, boolean):
         assert(self.event_type == EventSource.BOOLEAN)
         assert(isinstance(boolean, types.BooleanType))
-        msg = self.__create_event_msg()
+        msg = self.create_event_msg()
         msg = " ".join([msg, str(boolean)])
         self.interface.push_in_msg(msg)
 
     def send_string(self, string):
         assert(self.event_type == EventSource.STRING)
-        msg = self.__create_event_msg()
+        msg = self.create_event_msg()
         msg = " ".join([msg, string])
         self.interface.push_in_msg(msg)
 
@@ -128,10 +137,37 @@ class EventSource():
                                                 service_location)
         assert(EventSource.discovery is not None)
 
+        # After creating the socket and the discovery server, we need
+        # to pause here for a minute to allow remote services to get
+        # our initial discovery beacon and subscribe.  If we dont wait here
+        # our software may immediately send some start-up events which
+        # will most definitely be lost because no one has had a chance
+        # to subscribe
+        time.sleep(5)
+
     @staticmethod
     def Create(event_name, event_type):
         assert(EventSource.zsocket is not None)
         return EventSource(event_name, event_type)
+
+
+class EventVitalStatistic(EventSource):
+
+    def __init__(self, name, description, vital_type):
+        EventSource.__init__(self, name, EventSource.VITAL)
+
+        self.description = description
+        self.name = name
+        self.vital_type = vital_type
+
+    def send(self, total, delta):
+        msg = self.create_event_msg()
+        msg = " ".join([msg,
+                        self.vital_type,
+                        "".join(["'", self.description, "'"]),
+                        str(total),
+                        str(delta)])
+        self.interface.push_in_msg(msg)
 
 
 class EventCollector():

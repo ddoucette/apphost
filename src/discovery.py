@@ -152,8 +152,8 @@ class DiscoveryClient:
         for service in service_list:
             if service.time < now - self.ageout:
                 # The entry is too old.  Dump it
-                self.service_remove_cback(service)
                 self.discovered_service_list.remove(service)
+                self.service_remove_cback(service)
 
     def __recv_beacons(self):
         while True:
@@ -234,14 +234,18 @@ class DiscoveryClient:
                 if discovered_service.uuid != service.uuid:
                     # We have just found a service which has the same
                     # name and location, but different UUID.  This is
-                    # probably because of a restarted service daemon.  The
-                    # newly restarted service maintained its name/address,
-                    # but regenerated a new, random UUID.
-                    # Just replace the service UUID with the new one.
+                    # probably because of a restarted service daemon.
+                    # Because it is a restarted service, we need to
+                    # re-create the socket connection.
+                    # We need to declare the current service as
+                    # 'removed' and add in this new service.
                     Llog.LogInfo("UUID mismatch for service <" + str(service)
-                                 + ">.  Updating service entry with new UUID.")
-                    discovered_service.uuid = service.uuid
-                return service
+                                 + ">.  Announcing service removal.")
+                    self.discovered_service_list.remove(discovered_service)
+                    self.service_remove_cback(discovered_service)
+                    return None
+                else:
+                    return discovered_service
         return None
 
 def test1():
