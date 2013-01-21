@@ -31,6 +31,8 @@ import time
 import location
 import discovery
 import types
+import system
+
 from local_log import *
 
 
@@ -59,13 +61,6 @@ class EventSource(object):
         assert(event_type in EventSource.event_types)
         assert(event_name is not None)
 
-        # Make sure the EventSource base class has been
-        # initialized
-        if EventSource.user_name == "":
-            print "EventSource base class has not been initialized!"
-            print "EventSource.Init() must be called first!"
-            assert(False)
-
         self.event_type = event_type
         self.event_name = event_name
 
@@ -79,39 +74,14 @@ class EventSource(object):
                         EventSource.application_name])
         return msg
 
-    def send_value(self, value):
-        assert(self.event_type == EventSource.VALUE)
-        msg = self.create_event_msg()
-        msg = " ".join([msg, str(value)])
-        self.interface.push_in_msg(msg)
-
-    def send_log(self, contents):
-        assert(self.event_type == EventSource.LOG)
-        msg = self.create_event_msg()
-        msg = " ".join([msg, contents])
-        self.interface.push_in_msg(msg)
-
-    def send_boolean(self, boolean):
-        assert(self.event_type == EventSource.BOOLEAN)
-        assert(isinstance(boolean, types.BooleanType))
-        msg = self.create_event_msg()
-        msg = " ".join([msg, str(boolean)])
-        self.interface.push_in_msg(msg)
-
-    def send_string(self, string):
-        assert(self.event_type == EventSource.STRING)
-        msg = self.create_event_msg()
-        msg = " ".join([msg, string])
-        self.interface.push_in_msg(msg)
-
     @staticmethod
-    def Init(user_name, application_name, bind_addr="*"):
+    def Init(bind_addr="*"):
         assert(EventSource.zsocket is None)
         assert(EventSource.interface is None)
         assert(EventSource.ip_addr is None)
 
-        EventSource.user_name = user_name
-        EventSource.application_name = application_name
+        EventSource.user_name = system.System.GetUserName()
+        EventSource.application_name = system.System.GetApplicationName()
 
         EventSource.zsocket = zsocket.ZSocketServer(zmq.PUB,
                                                     "tcp",
@@ -143,12 +113,7 @@ class EventSource(object):
         # our software may immediately send some start-up events which
         # will most definitely be lost because no one has had a chance
         # to subscribe
-        time.sleep(5)
-
-    @staticmethod
-    def Create(event_name, event_type):
-        assert(EventSource.zsocket is not None)
-        return EventSource(event_name, event_type)
+        time.sleep(3)
 
 
 class EventVitalStatistic(EventSource):
@@ -167,6 +132,52 @@ class EventVitalStatistic(EventSource):
                         "".join(["'", self.description, "'"]),
                         str(total),
                         str(delta)])
+        self.interface.push_in_msg(msg)
+
+
+class EventLog(EventSource):
+
+    def __init__(self, name):
+        EventSource.__init__(self, name, EventSource.LOG)
+
+    def send(self, contents):
+        msg = self.create_event_msg()
+        msg = " ".join([msg, contents])
+        self.interface.push_in_msg(msg)
+
+
+class EventValue(EventSource):
+
+    def __init__(self, name):
+        EventSource.__init__(self, name, EventSource.VALUE)
+
+    def send(self, value):
+        msg = self.create_event_msg()
+        msg = " ".join([msg, str(value)])
+        self.interface.push_in_msg(msg)
+
+
+class EventBoolean(EventSource):
+
+    def __init__(self, name):
+        EventSource.__init__(self, name, EventSource.BOOLEAN)
+
+    def send(self, boolean):
+        assert(isinstance(boolean, types.BooleanType))
+        msg = self.create_event_msg()
+        msg = " ".join([msg, str(boolean)])
+        self.interface.push_in_msg(msg)
+
+
+class EventString(EventSource):
+
+    def __init__(self, name):
+        EventSource.__init__(self, name, EventSource.STRING)
+
+    def send(self, strmsg):
+        assert(isinstance(strmsg, types.StringType))
+        msg = self.create_event_msg()
+        msg = " ".join([msg, strmsg])
         self.interface.push_in_msg(msg)
 
 
@@ -235,7 +246,7 @@ class EventCollector():
         # to it, given our username and app_name settings.
         # If we have an empty username and/or appname, we
         # will subscribe to every EVENT service.
-        
+
         if service.service_name != "EVENT":
             return
 
@@ -284,7 +295,7 @@ class EventCollector():
 
 def test1():
 
-    source = EventSource.Create("utilization", EventSource.VALUE)
+    source = EventValue("utilization")
 
     class MyTestClass():
         def __init__(self, user_name, app_name):
@@ -311,7 +322,7 @@ def test1():
     time.sleep(15)
 
     # Now send an event and wait a second to let the collector receive it
-    source.send_value(12)
+    source.send(12)
     time.sleep(1)
 
     assert(mtc.got_message is True)
@@ -324,9 +335,9 @@ def test2():
     # types.
     # Ensure we get all the events we sign up to collect
 
-    source1 = EventSource.Create("utilization", EventSource.VALUE)
-    source2 = EventSource.Create("mylog", EventSource.LOG)
-    source3 = EventSource.Create("empty", EventSource.BOOLEAN)
+    source1 = EventValue("utilization")
+    source2 = EventLog("mylog")
+    source3 = EventBoolean("empty")
 
     class MyTestClass():
         def __init__(self, user_name, app_name):
@@ -353,9 +364,9 @@ def test2():
     time.sleep(15)
 
     # Now send an event out each source.
-    source2.send_log("hello world")
-    source1.send_value(12)
-    source3.send_boolean(True)
+    source2.send("hello world")
+    source1.send(12)
+    source3.send(True)
     time.sleep(1)
 
     assert(mtc.got_message is True)
@@ -366,10 +377,10 @@ def test3():
 
     # Subscribe to multiple sources.  Ensure we receive all events.
 
-    source1 = EventSource.Create("utilization", EventSource.VALUE)
-    source2 = EventSource.Create("mylog", EventSource.LOG)
-    source3 = EventSource.Create("empty", EventSource.BOOLEAN)
-    source4 = EventSource.Create("progress", EventSource.STRING)
+    source1 = EventValue("utilization")
+    source2 = EventLog("mylog")
+    source3 = EventBoolean("empty")
+    source4 = EventString("progress")
 
     class MyTestClass():
         def __init__(self, user_name, app_name):
@@ -407,11 +418,11 @@ def test3():
     time.sleep(15)
 
     # Now send an event out each source.
-    source2.send_log("hello world")
-    source1.send_value(12)
-    source3.send_boolean(True)
-    source4.send_string("made it here...")
-    source4.send_string("")
+    source2.send("hello world")
+    source1.send(12)
+    source3.send(True)
+    source4.send("made it here...")
+    source4.send("")
     time.sleep(1)
 
     assert(mtc.got_boolean is True)
@@ -424,8 +435,10 @@ if __name__ == '__main__':
 
     user_name = "ddoucette"
     app_name = "mytestapp2"
+    module_name = "event"
 
-    EventSource.Init(user_name, app_name)
+    system.System.Init(user_name, app_name, module_name)
+    EventSource.Init()
 
     test1()
     test2()

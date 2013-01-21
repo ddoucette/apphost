@@ -4,27 +4,30 @@
     modules.
 """
 
+
 class System():
 
-    __user_name = None
-    __application_name = None
+    __user_name = ""
+    __application_name = ""
+    __module_name = ""
 
     @staticmethod
-    def get_user_name():
-        assert(System.__user_name is not None)
+    def GetUserName():
+        assert(System.__user_name != "")
         return System.__user_name
 
     @staticmethod
-    def set_user_name(user_name):
-        assert(System.__user_name is None)
-        System.__user_name = user_name
-
-    @staticmethod
-    def get_application_name():
-        assert(System.__application_name is not None)
+    def GetApplicationName():
+        assert(System.__application_name != "")
         return System.__application_name
 
     @staticmethod
-    def set_application_name(application_name):
-        assert(System.__application_name is None)
-        System.__application_name = application_name
+    def GetModuleName():
+        assert(System.__module_name != "")
+        return System.__module_name
+
+    @staticmethod
+    def Init(user_name, app_name, module_name):
+        System.__user_name = user_name
+        System.__application_name = app_name
+        System.__module_name = module_name

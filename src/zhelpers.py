@@ -72,10 +72,16 @@ def zpipe(ctx):
 
 def get_local_ipaddr():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("gmail.com",80))
-    addrs = s.getsockname()
-    addr = None
+    addr = "127.0.0.1"
+
+    try:
+        s.connect(("gmail.com",80))
+        addrs = s.getsockname()
+    except:
+        addrs = []
+
     if addrs is not None and len(addrs) == 2:
         addr = addrs[0] 
+
     s.close()
     return addr

@@ -12,6 +12,7 @@
     LOG <name> <timestamp> <username> <appname> <level> <file> 
                         <line> [repeat count] <message>
 """
+import system
 import event
 import inspect
 import time
@@ -34,7 +35,7 @@ class Log():
 
         self.level = Log.default_level
         self.name = name
-        self.event = event.EventSource.Create(name, event.EventSource.LOG)
+        self.event = event.EventLog(name)
         assert(self.event is not None)
 
     def __log_msg(self, level, logmsg):
@@ -55,7 +56,7 @@ class Log():
         line = str(stack[2][2])
 
         logmsg = " ".join([level, filename, line, logmsg])
-        self.event.send_log(logmsg)
+        self.event.send(logmsg)
 
     def log_error(self, logmsg):
         self.__log_msg(Log.ERROR, logmsg)
@@ -138,6 +139,8 @@ if __name__ == '__main__':
 
     user_name = "bob"
     app_name = "mytestapp2"
+    module_name = "log"
 
-    event.EventSource.Init(user_name, app_name)
+    system.System.Init(user_name, app_name, module_name)
+    event.EventSource.Init()
     test1()
