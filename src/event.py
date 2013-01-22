@@ -40,14 +40,6 @@ class EventSource(object):
 
     """
     """
-    LOG = "LOG"
-    BOOLEAN = "BOOLEAN"
-    VALUE = "VALUE"
-    STRING = "STRING"
-    VITAL = "VITAL"
-
-    event_types = [LOG, BOOLEAN, VALUE, STRING, VITAL]
-
     port_range = [7000, 8000]
 
     user_name = ""
@@ -58,8 +50,8 @@ class EventSource(object):
     discovery = None
 
     def __init__(self, event_name, event_type):
-        assert(event_type in EventSource.event_types)
-        assert(event_name is not None)
+        assert(isinstance(event_name, types.StringType))
+        assert(isinstance(event_type, types.StringType))
 
         self.event_type = event_type
         self.event_name = event_name
@@ -76,6 +68,7 @@ class EventSource(object):
 
     @staticmethod
     def Init(bind_addr="*"):
+        # There is a single event socket for the application instance.
         assert(EventSource.zsocket is None)
         assert(EventSource.interface is None)
         assert(EventSource.ip_addr is None)
@@ -114,25 +107,6 @@ class EventSource(object):
         # will most definitely be lost because no one has had a chance
         # to subscribe
         time.sleep(3)
-
-
-class EventVitalStatistic(EventSource):
-
-    def __init__(self, name, description, vital_type):
-        EventSource.__init__(self, name, EventSource.VITAL)
-
-        self.description = description
-        self.name = name
-        self.vital_type = vital_type
-
-    def send(self, total, delta):
-        msg = self.create_event_msg()
-        msg = " ".join([msg,
-                        self.vital_type,
-                        "".join(["'", self.description, "'"]),
-                        str(total),
-                        str(delta)])
-        self.interface.push_in_msg(msg)
 
 
 class EventLog(EventSource):
@@ -192,9 +166,6 @@ class EventCollector():
                isinstance(event_cback, types.MethodType))
         assert(isinstance(event_types, types.ListType))
 
-        for event_type in event_types:
-            assert(event_type in EventSource.event_types)
-
         self.event_types = event_types
         self.user_name = user_name
         self.application_name = application_name
@@ -207,8 +178,8 @@ class EventCollector():
     def msg_cback(self, msg):
 
         event_type, sep, msg = msg.partition(" ")
-        if event_type not in EventSource.event_types:
-            Llog.LogError("Invalid event type received!: " + event_type)
+        if event_type == "":
+            Llog.LogError("Invalid event type received!")
             return
 
         event_name, sep, msg = msg.partition(" ")
