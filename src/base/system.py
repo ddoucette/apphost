@@ -3,6 +3,7 @@
     This instance provides global system information to all
     modules.
 """
+import event
 
 
 class System():
@@ -31,3 +32,4 @@ class System():
         System.__user_name = user_name
         System.__application_name = app_name
         System.__module_name = module_name
+        event.EventSource.Init()

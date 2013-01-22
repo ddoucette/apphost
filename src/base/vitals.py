@@ -6,6 +6,7 @@ import system
 import event
 import time
 import types
+from local_log import *
 
 
 class VitalStatisticErrorEvent(event.EventSource):
@@ -50,8 +51,9 @@ class VitalStatisticErrorEvent(event.EventSource):
         event['delta'] = 0
 
         try:
-            vital_type, description, values = event['contents'].split()
+            vital_type, description, values = event['contents'].split("'")
         except:
+            Llog.LogError("Cannot parse ERROR statistic contents!")
             return
 
         vital_type = vital_type.strip()
@@ -61,12 +63,13 @@ class VitalStatisticErrorEvent(event.EventSource):
         try:
             value_str, delta_str = values.split()
         except:
+            Llog.LogError("Cannot parse ERROR statistic values!")
             return
 
-        event['vital_type'] = "THRESHOLD"
+        event['vital_type'] = vital_type
         event['description'] = description
         event['value'] = int(value_str)
-        event['delta'] = int(delta)
+        event['delta'] = int(delta_str)
 
 
 class VitalStatisticError(object):
@@ -257,8 +260,8 @@ def test1():
     appname = "test1"
     modulename = "vitals"
 
+    print "initializing sys..."
     system.System.Init(username, appname, modulename)
-    event.EventSource.Init()
 
     class EventWatcher():
         def __init__(self):
@@ -288,8 +291,17 @@ def test1():
 
     mc = Myclass()
     mc.mystat += 1
+    time.sleep(1)
+    assert(evtwatch.value == 1)
+    assert(evtwatch.delta == 1)
     mc.mystat += 1
+    time.sleep(1)
+    assert(evtwatch.value == 2)
+    assert(evtwatch.delta == 1)
     mc.mystat += 12345
+    time.sleep(1)
+    assert(evtwatch.value == 12347)
+    assert(evtwatch.delta == 12345)
     time.sleep(1)
 
     assert(evtwatch.events == 3)

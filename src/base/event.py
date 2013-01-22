@@ -252,7 +252,11 @@ class EventCollector():
         zsock.connect()
         self.interface.add_socket(zsock)
         for event_type in self.event_types:
-            zsock.subscribe(str(event_type))
+            if event_type == "*":
+                # subscribe to everything, i.e the empty-string
+                zsock.subscribe("")
+            else:
+                zsock.subscribe(str(event_type))
 
     def service_remove(self, service):
         zsocket = self.interface.find_socket_by_location(service.location)
