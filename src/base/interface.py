@@ -12,7 +12,7 @@ import types
 import zsocket
 
 
-class Interface():
+class Interface(object):
 
     """
     """

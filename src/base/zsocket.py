@@ -184,11 +184,13 @@ class ZSocketServer(ZSocket):
     def __init__(self, socket_type,
                        protocol_name,
                        bind_address,
-                       port_range,
+                       port_range=[],
                        protocol_headers=[]):
         assert(bind_address != "")
-        assert(len(port_range) > 0 and len(port_range) <= 2)
-        assert(protocol_name in ["tcp"])
+        assert(protocol_name in ["tcp", "ipc"])
+
+        if protocol_name == "tcp":
+            assert(len(port_range) > 0 and len(port_range) <= 2)
 
         for port in port_range:
             assert(port > 0 and port < 65536)
@@ -202,10 +204,7 @@ class ZSocketServer(ZSocket):
         self.port_range = port_range
         self.protocol_name = protocol_name
 
-    def bind(self):
-
-        self.create_socket()
-
+    def __bind_tcp(self):
         # Loop through each port in our port range and attempt
         # to bind the socket.
         port = self.port_range[0]
@@ -229,8 +228,23 @@ class ZSocketServer(ZSocket):
                 # Failed to bind, try the next port
                 Llog.LogDebug("Failed to bind to port " + str(port))
                 port += 1
-
         assert(bound is True)
+
+    def __bind_ipc(self):
+        self.location = self.protocol_name \
+                            + "://" + self.bind_address
+        self.socket.bind(self.location)
+        Llog.LogDebug("bound to IPC channel (" + self.location + ")")
+
+    def bind(self):
+        self.create_socket()
+
+        if self.protocol_name == "tcp":
+            self.__bind_tcp()
+        elif self.protocol_name == "ipc":
+            self.__bind_ipc()
+        else:
+            assert(False)
 
 
 class ZSocketClient(ZSocket):
@@ -238,11 +252,13 @@ class ZSocketClient(ZSocket):
     def __init__(self, socket_type,
                        protocol_name,
                        address,
-                       port,
+                       port=0,
                        protocol_headers=[]):
         assert(address != "")
-        assert(protocol_name in ["tcp"])
-        assert(port > 0 and port < 65536)
+        assert(protocol_name in ["tcp", "ipc"])
+
+        if protocol_name == "tcp":
+            assert(port > 0 and port < 65536)
 
         ZSocket.__init__(self, socket_type, protocol_headers)
 
@@ -252,11 +268,11 @@ class ZSocketClient(ZSocket):
 
     def connect(self):
         self.create_socket()
-        self.location = self.protocol_name + "://" \
-                        + self.address + ":" \
-                        + str(self.port)
-        self.socket.connect(self.location)
+        self.location = self.protocol_name + "://" + self.address
 
+        if self.protocol_name == "tcp":
+            self.location += ":" + str(self.port)
+        self.socket.connect(self.location)
 
 
 def test1():
@@ -357,7 +373,97 @@ def test3():
     print "test3() - PASSED"
 
 
+def test4():
+
+    # Verify push/pull sockets work
+    spush = ZSocketServer(zmq.PUSH, "tcp", "*", [4567,4569])
+
+    assert(spush is not None)
+    spush.bind()
+
+    cpull = ZSocketClient(zmq.PULL, "tcp", "127.0.0.1", 4567)
+    assert(cpull is not None)
+
+    cpull.connect()
+
+    tx_msg = "hello there..."
+    spush.send(tx_msg)
+
+    msg = cpull.recv()
+    assert(msg == tx_msg)
+
+    cpull.close()
+    spush.close()
+
+    # And now verify the PULL side can be the server...
+    spull = ZSocketServer(zmq.PULL, "tcp", "*", [4567,4569])
+
+    assert(spull is not None)
+    spull.bind()
+
+    cpush = ZSocketClient(zmq.PUSH, "tcp", "127.0.0.1", 4567)
+    assert(cpush is not None)
+
+    cpush.connect()
+
+    tx_msg = "hello there..."
+    cpush.send(tx_msg)
+
+    msg = spull.recv()
+    assert(msg == tx_msg)
+
+    cpush.close()
+    spull.close()
+    print "test4() - PASSED"
+
+
+def test5():
+
+    # Verify IPC communications
+    spush = ZSocketServer(zmq.PUSH, "ipc", "test5-push.ipc")
+
+    assert(spush is not None)
+    spush.bind()
+
+    cpull = ZSocketClient(zmq.PULL, "ipc", "test5-push.ipc")
+    assert(cpull is not None)
+
+    cpull.connect()
+
+    tx_msg = "hello there..."
+    spush.send(tx_msg)
+
+    msg = cpull.recv()
+    assert(msg == tx_msg)
+
+    cpull.close()
+    spush.close()
+
+    # Now verify the PULL socket can act like a server... 
+    spull = ZSocketServer(zmq.PULL, "ipc", "test5-pull.ipc")
+
+    assert(spull is not None)
+    spull.bind()
+
+    cpush = ZSocketClient(zmq.PUSH, "ipc", "test5-pull.ipc")
+    assert(cpush is not None)
+
+    cpush.connect()
+
+    tx_msg = "hello there..."
+    cpush.send(tx_msg)
+
+    msg = spull.recv()
+    assert(msg == tx_msg)
+
+    cpush.close()
+    spull.close()
+    print "test5() - PASSED"
+
+
 if __name__ == '__main__':
     test1()
     test2()
     test3()
+    test4()
+    test5()

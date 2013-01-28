@@ -3,13 +3,13 @@
 """
 
 import system
-import event
+import event_source
 import time
 import types
 from local_log import *
 
 
-class VitalStatisticErrorEvent(event.EventSource):
+class VitalStatisticErrorEvent(event_source.EventSource):
 
     """
         Vital statistic error event.  Event is fired when an error
@@ -26,7 +26,7 @@ class VitalStatisticErrorEvent(event.EventSource):
     """
 
     def __init__(self, name, description):
-        event.EventSource.__init__(self, name, "VITAL")
+        event_source.EventSource.__init__(self, name, "VITAL")
         self.description = description
         self.name = name
         
@@ -96,7 +96,7 @@ class VitalStatisticError(object):
         return self.value
 
 
-class VitalStatisticThresholdEvent(event.EventSource):
+class VitalStatisticThresholdEvent(event_source.EventSource):
 
     """
         Vital statistic threshold event.  If a statistic crosses a threshold,
@@ -117,7 +117,7 @@ class VitalStatisticThresholdEvent(event.EventSource):
 
     def __init__(self, name, description):
 
-        event.EventSource.__init__(self, name, "VITAL")
+        event_source.EventSource.__init__(self, name, "VITAL")
 
         self.description = description
         self.name = name
@@ -256,13 +256,6 @@ class VitalStatisticThreshold(object):
 
 def test1():
 
-    username = "sysuser"
-    appname = "test1"
-    modulename = "vitals"
-
-    print "initializing sys..."
-    system.System.Init(username, appname, modulename)
-
     class EventWatcher():
         def __init__(self):
             self.events = 0
@@ -309,4 +302,12 @@ def test1():
 
 
 if __name__ == '__main__':
-    test1()
+
+    username = "sysuser"
+    appname = "test1"
+    modulename = "vitals"
+
+    print "initializing sys..."
+    system.System.Init(username, appname, modulename)
+
+    #test1()
