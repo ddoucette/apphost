@@ -17,13 +17,25 @@ public class ZSocketClient extends ZSocket {
                             int port )
     {
         super (socket_type);
-        assert protocol_name == "tcp" || protocol_name == "ipc";
+        assert protocol_name == "tcp";
         assert port > 0 && port < 65535;
         this.log = new Llog("ZSocketClient");
         this.port = port;
         this.address = address;
         this.protocol_name = protocol_name;
     }
+
+    public ZSocketClient (  int socket_type,
+                            String protocol_name,
+                            String address )
+    {
+        super (socket_type);
+        assert protocol_name == "ipc";
+        this.log = new Llog("ZSocketClient");
+        this.address = address;
+        this.protocol_name = protocol_name;
+    }
+
 
     public void connect()
     {
@@ -39,7 +51,8 @@ public class ZSocketClient extends ZSocket {
 	public static void main(final String[] args) throws Exception
     {
         ZSocketClient.test1();
-        ZSocketClient.test2();
+        // ZSocketClient.test2();
+        ZSocketClient.test3();
 	}
 
     public static void test1()
@@ -126,5 +139,26 @@ public class ZSocketClient extends ZSocket {
 
         s.close();
         System.out.println("test2() - PASSED");
+    }
+
+    public static void test3()
+    {
+        // Simple socket server/client.  IPC verification
+        int port_range[] = {4321,4323};
+        ZSocketServer s = new ZSocketServer(ZMQ.REP,
+                                          "ipc",
+                                          "test3.ipc");
+        ZSocketClient c = new ZSocketClient(ZMQ.REQ,
+                                          "ipc",
+                                          "test3.ipc");
+        s.bind();
+        c.connect();
+        String tx_msg = "hello there...";
+        c.send(tx_msg);
+        String msg = s.recv();
+        assert msg == tx_msg;
+        c.close();
+        s.close();
+        System.out.println("test3() PASSED!\n");
     }
 }

@@ -19,7 +19,7 @@ public class ZSocketServer extends ZSocket {
     {
         super (socket_type);
         assert port_range.length > 0 && port_range.length <= 2;
-        assert protocol_name == "tcp" || protocol_name == "ipc";
+        assert protocol_name == "tcp";
 
         for (int i = 0; i < port_range.length; i++)
         {
@@ -29,6 +29,18 @@ public class ZSocketServer extends ZSocket {
 
         this.bind_address = bind_address;
         this.port_range = port_range;
+        this.protocol_name = protocol_name;
+    }
+
+    public ZSocketServer (  int socket_type,
+                            String protocol_name,
+                            String bind_address )
+    {
+        super (socket_type);
+        assert protocol_name == "ipc";
+
+        this.log = new Llog("ZSocketServer");
+        this.bind_address = bind_address;
         this.protocol_name = protocol_name;
     }
 
