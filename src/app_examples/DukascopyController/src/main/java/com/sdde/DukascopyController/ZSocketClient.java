@@ -53,6 +53,7 @@ public class ZSocketClient extends ZSocket {
         ZSocketClient.test1();
         // ZSocketClient.test2();
         ZSocketClient.test3();
+        ZSocketClient.test4();
 	}
 
     public static void test1()
@@ -144,7 +145,6 @@ public class ZSocketClient extends ZSocket {
     public static void test3()
     {
         // Simple socket server/client.  IPC verification
-        int port_range[] = {4321,4323};
         ZSocketServer s = new ZSocketServer(ZMQ.REP,
                                           "ipc",
                                           "test3.ipc");
@@ -160,5 +160,25 @@ public class ZSocketClient extends ZSocket {
         c.close();
         s.close();
         System.out.println("test3() PASSED!\n");
+    }
+
+    public static void test4()
+    {
+        // Simple socket server/client.  PUSH/PULL verification.
+        ZSocketServer s = new ZSocketServer(ZMQ.PULL,
+                                          "ipc",
+                                          "test3.ipc");
+        ZSocketClient c = new ZSocketClient(ZMQ.PUSH,
+                                          "ipc",
+                                          "test3.ipc");
+        s.bind();
+        c.connect();
+        String tx_msg = "hello there...";
+        c.send(tx_msg);
+        String msg = s.recv();
+        assert msg == tx_msg;
+        c.close();
+        s.close();
+        System.out.println("test4() PASSED!\n");
     }
 }
