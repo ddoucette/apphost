@@ -1,106 +1,101 @@
 
 package com.sdde.DukascopyController;
 
-import java.util.Collection;
 import org.zeromq.*;
+import java.util.ArrayList;
 
 
-public class Interface {
+public class Interface implements Runnable {
 
     private Llog log;
+    private InterfaceEvent ievt;
+    private boolean alive = true;
+    private ArrayList<ZSocket> sockets;
 
-    protected ZMQ.Socket socket;
+    protected ZMQ.Socket[] pipe;
+    protected ZMQ.Poller poller;
     protected ZContext ctxt;
-    protected String location;
-    protected String protocol_name;
-    protected int socket_type;
 
-    private static final byte[] EMPTY = new byte[0];
-
-    public ZSocket (int socket_type)
+    public Interface(InterfaceEvent ievt)
     {
-        assert socket_type >= ZMQ.PUB;
-        this.log = new Llog("ZSocket");
-        this.socket_type = socket_type;
-        this.socket = null;
-        this.location = null;
-        this.protocol_name = null;
+        this.log = new Llog("Interface");
+        this.ievt = ievt;
         this.ctxt = new ZContext();
-        assert this.ctxt != null;
+        this.sockets = new ArrayList();
+        this.pipe = ZHelpers.zpipe(ctxt);
+        this.poller = this.ctxt.getContext().poller();
+        assert this.poller != null;
+        this.poller.register(this.pipe[1], ZMQ.Poller.POLLIN);
+    }
+
+    @Override
+    public void run()
+    {
+        while (!Thread.currentThread().isInterrupted() && this.alive )
+        {
+            this.poller.poll();
+            if (this.poller.pollin(0))
+            {
+                /* Socket in position 0 is always our receive pipe. */
+                this.process_command_pipe();
+            }
+            else
+            {
+                int i = 1;
+                if ( this.poller.pollin(i) )
+                {
+                    for ( ZSocket z : this.sockets )
+                    {
+                        if (z.get_socket() == this.poller.getSocket(i))
+                            this.process_socket(z);
+                    }
+                }
+            }
+        }
+    }
+
+    public void add_socket (ZSocket zsocket)
+    {
+        assert zsocket != null;
+        assert zsocket.get_socket() != null;
+        assert this.find_socket(zsocket.get_location()) == null;
+
+        this.sockets.add(zsocket);
+        this.poller.register(zsocket.get_socket(), ZMQ.Poller.POLLIN);
+    }
+
+    public void remove_socket(ZSocket zsocket)
+    {
+        for (ZSocket z: this.sockets)
+        {
+            if (z.get_location().equals(zsocket.get_location()))
+            {
+                this.sockets.remove(zsocket);
+                return;
+            }
+        }
+        assert false;
+    }
+
+    public ZSocket find_socket(String location)
+    {
+        for (ZSocket zsocket : this.sockets)
+        {
+            if (zsocket.get_location().equals(location))
+            {
+                return zsocket;
+            }
+        }
+        return null;
+    }
+
+    public void push_in_msg(String msg)
+    {
+        this.pipe[0].send(msg, 0);
     }
 
     public void close()
     {
-        if (this.ctxt != null)
-        {
-            this.ctxt.destroy();
-            this.ctxt = null;
-        }
-    }
-
-    public void create_socket()
-    {
-        this.socket = this.ctxt.createSocket(this.socket_type);
-        assert this.socket != null;
-    }
-
-    public void subscribe(String str)
-    {
-        assert this.socket != null;
-        this.socket.subscribe(str.getBytes());
-    }
-
-    public String recv ()
-    {
-        assert this.socket != null;
-
-        byte msg[] = this.socket.recv(0);
-        String str = "";
-
-        if ( msg.length > 0 )
-            str = new String(msg);
-
-        this.log.debug("Received: " + str);
-        return str;
-    }
-
-    public String recv (byte[] address)
-    {
-        assert this.socket != null;
-        assert this.socket_type == ZMQ.ROUTER;
-
-        String addr = new String(this.socket.recv(0));
-        this.log.debug("Received address: " + addr);
-        byte empty[] = this.socket.recv(0);
-        this.log.debug("Received empty:");
-        byte msg[] = this.socket.recv(0);
-        String str = "";
-
-        if ( msg.length > 0 )
-            str = new String(msg);
-
-        this.log.debug("Received: " + str);
-        return str;
-    }
-
-    public void send (String msg)
-    {
-        assert this.socket != null;
-        assert msg != null;
-
-        this.log.debug("Sending: " + msg);
-        this.socket.send(msg.getBytes(), 0);
-    }
-
-    public void send (byte[] address, String msg)
-    {
-        assert this.socket != null;
-        assert this.socket_type == ZMQ.ROUTER;
-        assert msg != null;
-
-        this.log.debug("Sending to (" + address + "): " + msg);
-        this.socket.send(address, ZMQ.SNDMORE);
-        this.socket.send(EMPTY, ZMQ.SNDMORE);
-        this.socket.send(msg.getBytes(), 0);
+        this.alive = false;
     }
 }

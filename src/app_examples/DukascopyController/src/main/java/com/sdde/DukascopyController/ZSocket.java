@@ -43,6 +43,16 @@ public class ZSocket {
         assert this.socket != null;
     }
 
+    public ZMQ.Socket get_socket()
+    {
+        return this.socket;
+    }
+
+    public String get_location()
+    {
+        return this.location;
+    }
+
     public void subscribe(String str)
     {
         assert this.socket != null;
