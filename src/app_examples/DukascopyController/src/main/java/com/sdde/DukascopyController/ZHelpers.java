@@ -6,9 +6,12 @@ import org.zeromq.*;
 
 public class ZHelpers {
 
+    public static final int HWM_DEFAULT = 1;
+    public static final int LINGER_DEFAULT = 0;
+
     private ZHelpers () {};
 
-    public static ZMQ.Socket[] zpipe(ZContext ctxt)
+    public static ZMQ.Socket[] zpipe(ZContext ctxt, int hwm)
     {
         ZMQ.Socket[] sockets = new ZMQ.Socket[2];
 
@@ -16,14 +19,27 @@ public class ZHelpers {
         {
             sockets[i] = ctxt.createSocket(ZMQ.PAIR);
             assert sockets[i] != null;
-            sockets[i].setLinger(0);
-            sockets[i].setHWM(1);
+            sockets[i].setLinger(LINGER_DEFAULT);
+            sockets[i].setHWM(hwm);
         }
         String sock_name = String.format("inproc://pipe-%d",
                                          sockets[0].hashCode());
         sockets[0].bind(sock_name);
         sockets[1].connect(sock_name);
         return sockets;
+    }
+
+    public static ZMQ.Socket[] zpipe(ZContext ctxt)
+    {
+        return zpipe(ctxt, HWM_DEFAULT);
+    }
+
+    public static void sleep (int msec)
+    {
+        try {
+            Thread.sleep(msec);
+        } catch (InterruptedException e) {
+        }
     }
 
     public static void main ( String[] args )

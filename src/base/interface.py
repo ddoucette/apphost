@@ -37,6 +37,8 @@ class Interface(object):
 
         self.sockets.append(zsocket)
         self.poller.register(zsocket.socket, zmq.POLLIN)
+        # Unblock the interface thread with a PASS message.
+        self.__push_in_msg_raw(["PASS"])
 
     def find_socket_by_location(self, location):
         for socket in self.sockets:
@@ -51,6 +53,8 @@ class Interface(object):
             if socket == zsocket:
                 self.poller.unregister(zsocket.socket)
                 self.sockets.pop(index)
+                # Unblock the interface thread with a PASS message.
+                self.__push_in_msg_raw(["PASS"])
                 return
 
         Llog.LogError("Cannot find socket: <"
@@ -93,7 +97,7 @@ class Interface(object):
         # the protocol message queue and processes them.
         while self.alive is True:
             try:
-                items = dict(self.poller.poll(1000))
+                items = dict(self.poller.poll())
             except zmq.ZMQError:
                 # We will see ZMQErrors from time to time.
                 # These are generally the result of removing
@@ -125,19 +129,23 @@ class Interface(object):
 
         msg = self.in_pipe[1].recv_multipart()
         assert(msg is not None)
-        assert(len(msg) >= 2)
+        assert(len(msg) >= 1)
 
         # In the interface layer, there are only a few valid
         # message types:
         #  MSG - protocol message
         #  KILL - kill message
+        #  PASS - do nothing.  Simply unblocks the processing thread.
         #
         #  The format of all multi-part commands are:
         #   ['CMDSTR', '', 'msgpart', 'msgpart', ...]
         #  The format of all string commands are:
         #   ['CMDSTR', 'msg-string']
 
-        if msg[0] == "KILL":
+        if msg[0] == "PASS":
+            # Null message meant to unblock the thread.
+            return
+        elif msg[0] == "KILL":
             # We are finished.  Just get out of the thread.
             self.alive = False
             return
