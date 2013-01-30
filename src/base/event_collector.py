@@ -33,32 +33,32 @@ class EventCollector():
         self.dc = discovery.DiscoveryClient(self.service_add,
                                             self.service_remove)
 
-    def msg_cback(self, msg):
-
+    @staticmethod
+    def event_msg_parse(msg):
         event_type, sep, msg = msg.partition(" ")
         if event_type == "":
             Llog.LogError("Invalid event type received!")
-            return
+            return None
 
         event_name, sep, msg = msg.partition(" ")
         if event_name == "":
             Llog.LogError("Invalid event name received!")
-            return
+            return None
 
         timestamp, sep, msg = msg.partition(" ")
         if timestamp == "":
             Llog.LogError("Invalid timestamp received!")
-            return
+            return None
 
         user_name, sep, msg = msg.partition(" ")
         if user_name == "":
             Llog.LogError("Invalid user name received!")
-            return
+            return None
 
         app_name, sep, msg = msg.partition(" ")
         if app_name == "":
             Llog.LogError("Invalid application name received!")
-            return
+            return None
 
         event = {'type': event_type,
                  'name': event_name,
@@ -66,6 +66,14 @@ class EventCollector():
                  'user_name': user_name,
                  'application_name': app_name,
                  'contents': msg}
+        return event
+
+    def msg_cback(self, msg):
+
+        event = EventCollector.event_msg_parse(msg)
+        if event is None:
+            Llog.LogError("Could not parse event message!: " + str(msg))
+            return
         self.event_cback(event)
 
     def service_add(self, service):
@@ -131,20 +139,20 @@ def test1():
     user_name = "ddoucette"
     app_name = "mytestapp2"
     module_name = "event"
-    source = EventValue("utilization", user_name, app_name)
+    source = EventSource("VALUE", "utilization", user_name, app_name)
 
     class MyTestClass():
         def __init__(self, user_name, app_name):
             self.got_message = False
             self.user_name = user_name
             self.app_name = app_name
-            collector = EventCollector([EventSource.VALUE],
+            collector = EventCollector("VALUE",
                                        self.event_rcv_cback,
                                        user_name,
                                        app_name)
 
         def event_rcv_cback(self, event):
-            assert(event['type'] == EventSource.VALUE)
+            assert(event['type'] == "VALUE")
             Llog.LogDebug("Got event: "
                           + event['type']
                           + " "
@@ -165,168 +173,7 @@ def test1():
     print "PASSED"
 
 
-def test2():
-
-    # Create 3 sources, but only collect for one of the event
-    # types.
-    # Ensure we get all the events we sign up to collect
-
-    user_name = "ddoucette"
-    app_name = "mytestapp2"
-    module_name = "event"
-
-    source1 = EventValue("utilization", user_name, app_name)
-    source2 = EventLog("mylog", user_name, app_name)
-    source3 = EventBoolean("empty", user_name, app_name)
-
-    class MyTestClass():
-        def __init__(self, user_name, app_name):
-            self.got_message = False
-            self.user_name = user_name
-            self.app_name = app_name
-            collector = EventCollector(["VALUE"],
-                                       self.event_rcv_cback,
-                                       user_name,
-                                       app_name)
-
-        def event_rcv_cback(self, event):
-            assert(event['type'] == "VALUE")
-            Llog.LogDebug("Got event: "
-                          + event['type']
-                          + " "
-                          + event['contents'])
-            self.got_message = True
-
-    mtc = MyTestClass(user_name, app_name)
-
-    # Give my test class a chance to receive a beacon from the event
-    # sources
-    time.sleep(15)
-
-    # Now send an event out each source.
-    source2.send("hello world")
-    source1.send(12)
-    source3.send(True)
-    time.sleep(1)
-
-    assert(mtc.got_message is True)
-    print "PASSED"
-
-
-def test3():
-
-    # Subscribe to multiple sources.  Ensure we receive all events.
-
-    user_name = "ddoucette"
-    app_name = "mytestapp2"
-    module_name = "event"
-
-    source1 = EventValue("utilization", user_name, app_name)
-    source2 = EventLog("mylog", user_name, app_name)
-    source3 = EventBoolean("empty", user_name, app_name)
-    source4 = EventString("progress", user_name, app_name)
-
-    class MyTestClass():
-        def __init__(self, user_name, app_name):
-            self.got_value = False
-            self.got_boolean = False
-            self.got_string = False
-            self.user_name = user_name
-            self.app_name = app_name
-            collector = EventCollector(["VALUE", "BOOLEAN", "STRING"],
-                                       self.event_rcv_cback,
-                                       user_name,
-                                       app_name)
-
-        def event_rcv_cback(self, event):
-            Llog.LogDebug("Received event: "
-                          + event['type']
-                          + " "
-                          + event['contents'])
-            if event['type'] == "VALUE":
-                self.got_value = True
-            elif event['type'] == "BOOLEAN":
-                self.got_boolean = True
-            elif event['type'] == "STRING":
-                self.got_string = True
-            else:
-                Llog.LogError("Receive invalid event type: " + event['type'])
-                assert(False)
-
-    mtc = MyTestClass(user_name, app_name)
-
-    # Give my test class a chance to receive a beacon from the event
-    # sources
-    time.sleep(15)
-
-    # Now send an event out each source.
-    source2.send("hello world")
-    source1.send(12)
-    source3.send(True)
-    source4.send("made it here...")
-    source4.send("")
-    time.sleep(1)
-
-    assert(mtc.got_boolean is True)
-    assert(mtc.got_value is True)
-    assert(mtc.got_string is True)
-    print "PASSED"
-
-
-def test4():
-
-    # Create events from 2 different users.  Verify the event
-    # sources use independent sockets
-    app_name = "test4"
-
-    source1 = EventValue("myvalue", "user1", app_name)
-    source2 = EventValue("myvalue", "user2", app_name)
-
-    class MyTestClass():
-        def __init__(self, user_name, app_name):
-            self.got_value = False
-            self.value = 0
-            self.user_name = user_name
-            self.app_name = app_name
-            collector = EventCollector(["VALUE", "BOOLEAN", "STRING"],
-                                       self.event_rcv_cback,
-                                       user_name,
-                                       app_name)
-
-        def event_rcv_cback(self, event):
-            Llog.LogDebug("Received event: "
-                          + event['type']
-                          + " "
-                          + event['contents'])
-            if event['type'] == "VALUE":
-                self.got_value = True
-                self.value = int(event['contents'])
-            else:
-                Llog.LogError("Receive invalid event type: " + event['type'])
-                assert(False)
-
-    mtc1 = MyTestClass("user1", app_name)
-    mtc2 = MyTestClass("user2", app_name)
-
-    time.sleep(15)
-
-    # Now send an event out each source.
-    source2.send(1234)
-    source1.send(5678)
-    time.sleep(1)
-
-    assert(mtc1.got_value is True)
-    assert(mtc1.value == 5678)
-    assert(mtc2.got_value is True)
-    assert(mtc2.value == 1234)
-    print "PASSED"
-
-
 if __name__ == '__main__':
 
     from event_source import *
-
-    #test1()
-    #test2()
-    #test3()
-    test4()
+    test1()

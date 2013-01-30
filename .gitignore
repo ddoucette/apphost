@@ -5,6 +5,7 @@
 
 # Packages
 *.egg
+*.jar
 *.egg-info
 dist
 build

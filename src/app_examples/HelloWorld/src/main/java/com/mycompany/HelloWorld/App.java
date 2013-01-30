@@ -43,7 +43,10 @@ public class App extends Thread
 
     public static void main( String[] args )
     {
-        System.out.println("Hello World!");
+        System.out.println("Hello World! " + args.length + " arguments.");
+        System.out.println("arg[0]: " + args[0]);
+        System.out.println("Working Directory = " +
+                      System.getProperty("user.dir"));
         App app = new App(args[0], args[1]);
         app.start();
     }

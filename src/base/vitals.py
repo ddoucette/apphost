@@ -9,38 +9,61 @@ import time
 import types
 from local_log import *
 
-system.System.Init("sysadmin", "myapp", "vitals")
 
+##
+# Vital statistics are basically python descriptor variables which,
+# when incremented, result in the sending of a "VITAL" event to the
+# listeners.  This is a syntactic way of binding error and other
+# statistics to event reporting and system health monitoring.
+# Each vital statistic type is broken into 2 parts.  Part 1 is the
+# actual variable which is implemented as a python descriptor.  The
+# 2nd part is the object which sends the event.
+# Each event is based on a standard 'EventSource' event, with the
+# event type set to "VITAL".  Each of the various types of vital
+# statistics, (ie. ERROR, THRESHOLD, ...), have their own objects
+# below (VStatErrorEvent, VStatThresholdEvent, ...) and use the first
+# field of the event contents to indicate the vital statistic type.
 
-class VitalStatisticErrorEvent(object):
+class VStatEvent(object):
 
     """
-        Vital statistic error event.  Event is fired when an error
-        statistic is incremented.
+        Base class for all vital statistic events.
+        All vital statistic events take the form:
 
-        Format is:
         <event msg> <vital stat type> <vital stat description>
-                        <value> <delta>
+                        <value1> ... <valueN>
 
         where:
             <vital stat type> == CRITICAL, ERROR, THRESHOLD, ...
-            <value> == Current value of the statistic.
-            <delta> == Change in value since last event was issued.
+
+        So the entire event message is:
+
+        'VITAL myvitalstatname TIMESTAMP username appname vstattype values'
     """
 
-    def __init__(self, name, description):
-        user_name = system.System.GetUserName()
-        application_name = system.System.GetApplicationName()
+    def __init__(self, name, vstat_type, description):
+
+        # We use ':' to separate vstat members, so we must
+        # ensure the colon is not used in the name or description
+        assert(vstat_type.count(":") == 0)
+        assert(description.count(":") == 0)
+
+        self.user_name = system.System.GetUserName()
+        self.application_name = system.System.GetApplicationName()
 
         self.event = event_source.EventSource(name,
                                               "VITAL",
-                                              user_name,
-                                              application_name)
-        self.description = "'" + description + "'"
+                                              self.user_name,
+                                              self.application_name)
+        self.description = description
         self.name = name
-        
-    def send(self, value, delta):
-        msg = " ".join([self.description, str(value), str(delta)])
+        self.vstat_type = vstat_type
+
+    def send(self, values):
+        values_str = ":".join(values)
+        msg = ":".join([self.vstat_type,
+                        self.description,
+                        values_str])
         self.event.send(msg)
 
     @staticmethod
@@ -48,40 +71,47 @@ class VitalStatisticErrorEvent(object):
         # Take in the event dictionary and augment the members
         # with the data parsed out of the 'contents' of the event
         # message.
+        assert(event['contents'] != "")
 
-        event['vital_type'] = "ERROR"
-        event['description'] = "Invalid event"
-        event['value'] = 0
-        event['delta'] = 0
+        msg = event['contents']
+        vital_type, sep, msg = msg.partition(":")
+        description, sep, msg = msg.partition(":")
 
-        try:
-            vital_type, description, values = event['contents'].split("'")
-        except:
-            Llog.LogError("Cannot parse ERROR statistic contents!")
-            return
-
-        vital_type = vital_type.strip()
-        description = description.strip()
-        values = values.strip()
-
-        try:
-            value_str, delta_str = values.split()
-        except:
-            Llog.LogError("Cannot parse ERROR statistic values!")
-            return
-
+        # The remainder of the msg is the values.  The parsing
+        # of the values is specific to the sub-class.
         event['vital_type'] = vital_type
         event['description'] = description
-        event['value'] = int(value_str)
-        event['delta'] = int(delta_str)
+        event['values'] = msg
 
 
-class VitalStatisticError(object):
+class VStatErrorEvent(VStatEvent):
+
+    def __init__(self, name, description):
+        VStatEvent.__init__(self, name, "ERROR", description)
+
+    def send(self, value, delta):
+        values = [str(value), str(delta)]
+        VStatEvent.send(self, values)
+
+    @staticmethod
+    def decode(event):
+        VStatEvent.decode(event)
+        try:
+            value, delta = event['values'].split(":")
+        except:
+            Llog.LogError("Could not parse ERROR VStat: values=("
+                          + event['values'] + ")")
+            return
+        event['value'] = int(value)
+        event['delta'] = int(delta)
+
+
+class VStatError(object):
 
     def __init__(self, name, description):
         self.name = name
         self.description = description
-        self.event = VitalStatisticErrorEvent(name, description)
+        self.event = VStatErrorEvent(name, description)
         self.value = 0
 
     def __set__(self, instance, value):
@@ -92,7 +122,6 @@ class VitalStatisticError(object):
             return
 
         self.value = value
-
         # The value has been updated.  Issue the event.
         self.event.send(self.value, delta)
 
@@ -100,87 +129,19 @@ class VitalStatisticError(object):
         return self.value
 
 
-class VitalStatisticThresholdEvent(event_source.EventSource):
-
-    """
-        Vital statistic threshold event.  If a statistic crosses a threshold,
-        this event will fire.
-
-        Format is:
-        <event msg> <vital stat type> <vital stat description>
-                        <value> <threshold>
-
-        where:
-            <vital stat type> == CRITICAL, ERROR, THRESHOLD, ...
-            <value> == Current value of the statistic
-            <threshold> == Threshold crossed resulting in this event.
-    """
-    decode_errors = VitalStatisticError(
-                            "decode_errors",
-                            "Error decoding a threshold event")
-
-    def __init__(self, name, description):
-
-        event_source.EventSource.__init__(self, name, "VITAL")
-
-        self.description = description
-        self.name = name
-        
-    def send(self, value, threshold):
-        msg = self.create_event_msg()
-        msg = " ".join([msg,
-                        "THRESHOLD",
-                        "".join(["'", self.description, "'"]),
-                        str(value),
-                        str(threshold)])
-        self.interface.push_in_msg(msg)
-
-    @staticmethod
-    def decode(event):
-        # Take in the event dictionary and augment the members
-        # with the data parsed out of the 'contents' of the event
-        # message.
-
-        event['vital_type'] = "THRESHOLD"
-        event['description'] = "Invalid event"
-        event['value'] = 0
-        event['threshold'] = 0
-
-        try:
-            vital_type, description, values = event['contents'].split()
-        except:
-            self.decode_errors += 1
-            return
-
-        vital_type = vital_type.strip()
-        description = description.strip()
-        values = values.strip()
-
-        try:
-            value_str, threshold_str = values.split()
-        except:
-            self.decode_errors += 1
-            return
-
-        event['vital_type'] = "THRESHOLD"
-        event['description'] = description
-        event['value'] = int(value_str)
-        event['threshold'] = int(threshold_str)
-
-
-class VitalStatisticEventDecoder():
+class VStatEventDecoder():
 
     @staticmethod
     def decode(vital_type, event):
         if vital_type == "THRESHOLD":
-            VitalStatisticThresholdEvent.decode(event)
+            VStatThresholdEvent.decode(event)
             return
 
         if vital_type == "ERROR":
-            VitalStatisticErrorEvent.decode(event)
+            VStatErrorEvent.decode(event)
             return
 
-        Llog.LogError("Invalid vital statistic type: " + vital_type)
+        Llog.LogError("Invalid vital statistic type: " + str(vital_type))
         assert(False)
 
 
@@ -199,63 +160,10 @@ class VitalEventCollector():
 
     def event_rx_cback(self, event):
         assert(event['type'] == "VITAL")
-        vital_type, description, values \
-                                = event['contents'].split("'")
-        vital_type = vital_type.strip()
-        VitalStatisticEventDecoder.decode(vital_type, event)
-        self.vital_rx_cback(event)
-
-
-class VitalStatisticThreshold(object):
-
-    ABOVE = "ABOVE"
-    BELOW = "BELOW"
-    threshold_types = [ABOVE, BELOW]
-    invalid_input = VitalStatisticError(
-                        "invalid_input",
-                        "Input value received outside the range specified.")
-
-    def __init__(self, name,
-                       description,
-                       input_range,
-                       threshold_type,
-                       threshold):
-        assert(isinstance(input_range, types.ListType))
-        assert(input_range[0] < input_range[1])
-        assert(threshold > input_range[0] and threshold < input_range[1])
-        assert(threshold_type in VitalThreshold.threshold_types)
-
-        self.threshold = threshold
-        self.threshold_type = threshold_type
-        self.input_range = input_range
-        self.event = VitalStatisticThresholdEvent(name, description)
-        self.value = 0
-
-    def __set__(self, instance, value):
-
-        if value < self.input_range[0] or value > self.input_range[1]:
-            # Value is outside the range specified.
-            self.invalid_input += 1
-            return
-
-        self.value = value
-
-        if value > self.threshold and \
-           self.threshold_type == VitalThreshold.ABOVE:
-            # The value of the input is above the set threshold,
-            # and this is an ABOVE type...
-            self.event.send(self.value, self.threshold)
-            return
-
-        if value < self.threshold and \
-           self.threshold_type == VitalThreshold.BELOW:
-            # The value of the input is below the set threshold,
-            # and this is a BELOW type...
-            self.event.send(self.value, self.threshold)
-            return
-
-    def __get__(self, instance, owner):
-        return self.value
+        vital_type, sep, msg = event['contents'].partition(":")
+        if vital_type in self.vital_types:
+            VStatEventDecoder.decode(vital_type, event)
+            self.vital_rx_cback(event)
 
 
 def test1():
@@ -266,7 +174,7 @@ def test1():
             self.value = 0
             self.delta = 0
             self.collector = VitalEventCollector(
-                                    ["VITAL"],
+                                    ["ERROR"],
                                     self.event_cback)
 
         def event_cback(self, event):
@@ -284,13 +192,14 @@ def test1():
     time.sleep(10)
 
     class Myclass(object):
-        mystat = VitalStatisticError("mystat", "Some junk statistic")
+        mystat = VStatError("mystat", "Some junk statistic")
 
     mc = Myclass()
     mc.mystat += 1
     time.sleep(1)
     assert(evtwatch.value == 1)
     assert(evtwatch.delta == 1)
+
     mc.mystat += 1
     time.sleep(1)
     assert(evtwatch.value == 2)
@@ -312,6 +221,6 @@ if __name__ == '__main__':
     modulename = "vitals"
 
     print "initializing sys..."
-    #system.System.Init(username, appname, modulename)
+    system.System.Init(username, appname, modulename)
 
     test1()

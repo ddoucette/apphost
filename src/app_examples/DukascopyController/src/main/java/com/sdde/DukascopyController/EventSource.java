@@ -194,6 +194,11 @@ class EventSocket implements InterfaceEvent {
         this.zsocket = new ZSocketClient(ZMQ.PUSH,
                                     "ipc",
                                     user_name + ":" + application_name);
+        /*
+        this.zsocket = new ZSocketClient(ZMQ.PUSH,
+                                    "tcp",
+                                    "127.0.0.1", 6556);
+        */
         this.zsocket.connect();
         this.intf.add_socket(this.zsocket);
     }

@@ -27,6 +27,13 @@ class System():
         return System.__module_name
 
     @staticmethod
+    def GetSLA():
+        # XXX eventually, this needs to take the username and
+        # query a DB.
+        sla = {'max_event_types': 25, 'max_tx_events_per_minute': 100}
+        return sla
+
+    @staticmethod
     def Init(user_name, app_name, module_name):
         System.__user_name = user_name
         System.__application_name = app_name
