@@ -103,17 +103,14 @@ class EventSource(object):
         self.socket = EventSource.GetSocket(user_name, application_name)
         assert(self.socket is not None)
 
-    def create_event_msg(self):
-
+    def send(self, contents):
         timestamp = time.strftime("%x-%X")
         msg = " ".join([self.event_type,
                         self.event_name,
                         timestamp,
                         self.user_name,
-                        self.application_name])
-        return msg
-
-    def send_event_msg(self, msg):
+                        self.application_name,
+                        contents])
         self.socket.send(msg)
 
     @staticmethod
@@ -135,48 +132,3 @@ class EventSource(object):
         EventSource.sockets.append(socket)
         return socket
 
-
-class EventLog(EventSource):
-
-    def __init__(self, name, user_name, application_name):
-        EventSource.__init__(self, name, "LOG", user_name, application_name)
-
-    def send(self, contents):
-        msg = self.create_event_msg()
-        msg = " ".join([msg, contents])
-        self.send_event_msg(msg)
-
-
-class EventValue(EventSource):
-
-    def __init__(self, name, user_name, application_name):
-        EventSource.__init__(self, name, "VALUE", user_name, application_name)
-
-    def send(self, value):
-        msg = self.create_event_msg()
-        msg = " ".join([msg, str(value)])
-        self.send_event_msg(msg)
-
-
-class EventBoolean(EventSource):
-
-    def __init__(self, name, user_name, application_name):
-        EventSource.__init__(self, name, "BOOLEAN", user_name, application_name)
-
-    def send(self, boolean):
-        assert(isinstance(boolean, types.BooleanType))
-        msg = self.create_event_msg()
-        msg = " ".join([msg, str(boolean)])
-        self.send_event_msg(msg)
-
-
-class EventString(EventSource):
-
-    def __init__(self, name, user_name, application_name):
-        EventSource.__init__(self, name, "STRING", user_name, application_name)
-
-    def send(self, strmsg):
-        assert(isinstance(strmsg, types.StringType))
-        msg = self.create_event_msg()
-        msg = " ".join([msg, strmsg])
-        self.send_event_msg(msg)

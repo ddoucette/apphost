@@ -59,36 +59,25 @@ class AppExec(object):
 
 class JavaAppExec(AppExec):
 
-    def __init__(self, jarfile, mainappname, arg="", cwd=None):
+    def __init__(self, jarfiles, mainappname, args, cwd=None):
         AppExec.__init__(self, cwd)
 
-        self.jarfile = jarfile
-        self.mainappname = mainappname
-        self.app_arg = arg
-        self.cmdline = ['java', '-cp', jarfile, mainappname, arg]
+        classpath = ":".join(jarfiles)
+        argstring = " ".join(args)
+        self.cmdline = ['java',
+                        '-classpath',
+                        classpath,
+                        mainappname,
+                        argstring]
 
 
 def test1():
 
-    app = JavaAppExec("HelloWorld-1.0-SNAPSHOT.jar",
+    app = JavaAppExec(["target/HelloWorld-1.0-SNAPSHOT.jar",
+                       "lib/DukascopyController-1.0-SNAPSHOT.jar"],
                       "com.mycompany.HelloWorld.App",
-                      "mystrategy.class",
-                      "../../../app_examples/HelloWorld/target")
-    app.run()
-
-    is_running = app.is_running()
-    assert(is_running is True)
-    time.sleep(5)
-
-    app.stop()
-    time.sleep(1)
-    is_running = app.is_running()
-    assert(is_running is False)
-
-    app = JavaAppExec("HelloWorld-1.0-SNAPSHOT.jar",
-                      "com.mycompany.HelloWorld.App",
-                      "mystrategy.class",
-                      "../../../app_examples/HelloWorld/target")
+                      ["user123", "test1"],
+                      "../../../app_examples/HelloWorld")
     app.run()
 
     is_running = app.is_running()
@@ -105,5 +94,5 @@ def test1():
 
 if __name__ == '__main__':
     import time
-    system.System.Init("myusr", "myapp", "app_host")
+    system.System.Init("sysadmin", "myapp", "app_host")
     test1()

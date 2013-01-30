@@ -14,10 +14,14 @@
       <version>3.8.1</version>
       <scope>test</scope>
     </dependency>
+
     <dependency>
-      <groupId>org.jeromq</groupId>
-      <artifactId>jeromq</artifactId>
-      <version>0.2.0</version>
+        <groupId>com.sdde</groupId>
+        <artifactId>DukascopyController</artifactId>
+        <version>1.0-SNAPSHOT</version>
+        <scope>system</scope>
+        <systemPath>${basedir}/lib/DukascopyController-1.0-SNAPSHOT.jar</systemPath>
     </dependency>
+
   </dependencies>
 </project>

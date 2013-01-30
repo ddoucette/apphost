@@ -4,12 +4,15 @@
 
 import system
 import event_source
+import event_collector
 import time
 import types
 from local_log import *
 
+system.System.Init("sysadmin", "myapp", "vitals")
 
-class VitalStatisticErrorEvent(event_source.EventSource):
+
+class VitalStatisticErrorEvent(object):
 
     """
         Vital statistic error event.  Event is fired when an error
@@ -26,18 +29,19 @@ class VitalStatisticErrorEvent(event_source.EventSource):
     """
 
     def __init__(self, name, description):
-        event_source.EventSource.__init__(self, name, "VITAL")
-        self.description = description
+        user_name = system.System.GetUserName()
+        application_name = system.System.GetApplicationName()
+
+        self.event = event_source.EventSource(name,
+                                              "VITAL",
+                                              user_name,
+                                              application_name)
+        self.description = "'" + description + "'"
         self.name = name
         
     def send(self, value, delta):
-        msg = self.create_event_msg()
-        msg = " ".join([msg,
-                        "ERROR",
-                        "".join(["'", self.description, "'"]),
-                        str(value),
-                        str(delta)])
-        self.interface.push_in_msg(msg)
+        msg = " ".join([self.description, str(value), str(delta)])
+        self.event.send(msg)
 
     @staticmethod
     def decode(event):
@@ -188,7 +192,7 @@ class VitalEventCollector():
 
         self.vital_rx_cback = rx_cback
         self.vital_types = vital_types[:]
-        self.collector = event.EventCollector(["VITAL"],
+        self.collector = event_collector.EventCollector(["VITAL"],
                                               self.event_rx_cback,
                                               username,
                                               appname)
@@ -308,6 +312,6 @@ if __name__ == '__main__':
     modulename = "vitals"
 
     print "initializing sys..."
-    system.System.Init(username, appname, modulename)
+    #system.System.Init(username, appname, modulename)
 
-    #test1()
+    test1()

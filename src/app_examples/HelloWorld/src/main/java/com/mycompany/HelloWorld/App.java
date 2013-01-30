@@ -1,27 +1,50 @@
 package com.mycompany.HelloWorld;
 
+import com.sdde.DukascopyController.*;
+
+
 /**
  * Hello world!
  *
  */
-public class App 
+public class App extends Thread
 {
-    public static void main( String[] args )
+    private NumericEvent evt1;
+    private NumericEvent evt2;
+    private NumericEvent evt3;
+
+    public App (String user_name, String application_name)
+    {
+        AppSystem.Init(user_name, application_name);
+
+        evt1 = new NumericEvent("evt1");
+        evt2 = new NumericEvent("evt2");
+        evt3 = new NumericEvent("evt3");
+    }
+
+    public void run ()
     {
         int iteration = 0;
+
         while (true)
         {
-            System.out.println("Hello World! (" + iteration++ + ")");
-            if ( args.length > 0 )
-                System.out.println("ARG[0]: " + args[0]);
-
             try {
                 Thread.sleep(5000);
             } catch (InterruptedException e) {
                 break;
             }
-            if (iteration > 10)
-                break;
+
+            evt1.send(1.0 + iteration);
+            evt2.send(30 + iteration);
+            evt3.send(67.965 + iteration);
+            iteration++;
         }
+    }
+
+    public static void main( String[] args )
+    {
+        System.out.println("Hello World!");
+        App app = new App(args[0], args[1]);
+        app.start();
     }
 }
