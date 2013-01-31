@@ -192,6 +192,62 @@ class AppEventProxy(object):
         if event is not None:
             event.send(app_event['contents'])
 
+    def close(self):
+        self.interface.close()
+
+
+class AppFileLoader(object):
+
+    """
+        The AppFileLoader class provides an API to verify an application
+        file's existence, and receive chunks of application file data
+        to build the application file locally.
+
+        To use:
+
+        app_loader = AppFileLoader(file_name, md5-sum)
+
+        if app_loader.exists() is False:
+            app_loader.load_file_start()
+
+        ...
+
+        app_loader.file_chunk(bytes)
+        app_loader.file_chunk(bytes)
+        app_loader.file_chunk(bytes)
+
+        app_loader.load_file_complete()
+
+        if app_loader.exists() is True:
+            # file loaded correctly, and the md5 checks out.
+        else:
+            # bad file load
+
+    """
+    def __init__(self, file_name, md5):
+        self.file_name = file_name
+        self.md5_sum = md5
+
+    def exists(self):
+        md5 = self.calc_md5()
+        if md5 == self.md5_sum:
+            return True
+        return False
+
+    def calc_md5(self):
+        proc = subprocess.Popen(['md5sum', self.file_name],
+                                         stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE,
+                                         cwd=".",
+                                         env=None)
+        out_str, err_str = proc.communicate()
+        if out_str != "":
+            md5, sep, out_str = out_str.partition(" ")
+            return md5
+        if err_str != "":
+            Llog.LogError("md5sum: error: " + err_str)
+        return None
+
 
 def test1():
 
@@ -216,16 +272,30 @@ def test1():
     is_running = app.is_running()
     assert(is_running is True)
 
-    time.sleep(120)
+    time.sleep(20)
 
     app.stop()
     time.sleep(1)
     is_running = app.is_running()
     assert(is_running is False)
 
+    evt_proxy.close()
     print "PASSED"
+
+
+def test2():
+
+    app_loader = AppFileLoader("HelloWorld-1.0-SNAPSHOT.jar",
+                               "10b461a2f52ec6280ee1ea4bb46b823a")
+
+    md5 = app_loader.calc_md5()
+    if md5 is not None:
+        print "md5: " + md5
+    else:
+        print "Cannot calculate md5"
 
 
 if __name__ == '__main__':
     import time
-    test1()
+    #test1()
+    test2()
