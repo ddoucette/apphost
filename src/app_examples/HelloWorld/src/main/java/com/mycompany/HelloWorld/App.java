@@ -38,6 +38,10 @@ public class App extends Thread
             evt2.send(30 + iteration);
             evt3.send(67.965 + iteration);
             iteration++;
+
+            /* Do something to generate a crash. */
+            if ( iteration == 20 )
+                evt3 = null;
         }
     }
 

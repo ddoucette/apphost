@@ -6,6 +6,8 @@ import subprocess
 import zmq
 import zsocket
 import interface
+import threading
+import select
 import event_source
 import event_collector
 import os
@@ -18,13 +20,50 @@ class AppExec(object):
         AppExec controls the execution of a command.
     """
     def __init__(self, cwd=None):
-        self.cmdline = []
-        self.cwd = cwd
         self.user_name = system.System.GetUserName()
         self.application_name = system.System.GetApplicationName()
+        self.cmdline = []
+        self.cwd = cwd
         self.proc = None
         self.child_env = []
         self.return_value = -1
+        self.poller = None
+        self.alive = False
+
+        # STDOUT/STDERR messages will be sent out as events
+        self.stdout_event = event_source.EventSource(
+                                    "stdout/" + self.application_name,
+                                    "STDOUT",
+                                    self.user_name,
+                                    self.application_name)
+        self.stderr_event = event_source.EventSource(
+                                    "stderr/" + self.application_name,
+                                    "STDERR",
+                                    self.user_name,
+                                    self.application_name)
+        self.thread = threading.Thread(target=self.__thread_entry)
+        self.thread.daemon = True
+
+    def __thread_entry(self):
+        while self.alive is True:
+            events = self.poller.poll()
+            for fd, event in events:
+                if fd == self.proc.stdout.fileno():
+                    msg = self.proc.stdout.readline()
+                    if msg != "":
+                        self.stdout_event.send(msg);
+
+                if fd == self.proc.stderr.fileno():
+                    msg = self.proc.stderr.readline()
+                    if msg != "":
+                        self.stderr_event.send(msg);
+
+            self.proc.poll()
+            if self.proc.returncode != None:
+                self.return_value = self.proc.returncode
+                self.alive = False
+                Llog.LogInfo("Process terminated ("
+                             + str(self.return_value) + ")")
 
     def run(self):
         assert(self.proc is None)
@@ -34,10 +73,10 @@ class AppExec(object):
 
         try:
             self.proc = subprocess.Popen(self.cmdline,
-                                         #stdout=subprocess.PIPE,
-                                         stdout=None,
-                                         #stderr=subprocess.PIPE,
-                                         stderr=None,
+                                         stdout=subprocess.PIPE,
+                                         #stdout=None,
+                                         stderr=subprocess.PIPE,
+                                         #stderr=None,
                                          cwd=self.cwd,
                                          #env=self.child_env)
                                          env=None)
@@ -47,14 +86,17 @@ class AppExec(object):
 
         assert(self.proc is not None)
         self.pid = self.proc.pid
+        self.alive = True
+
+        self.poller = select.poll()
+        self.poller.register(self.proc.stdout, select.POLLIN)
+        self.poller.register(self.proc.stderr, select.POLLIN)
+
+        # Start our thread which monitors stdout/stderr of our app.
+        self.thread.start()
 
     def is_running(self):
-        assert(self.proc is not None)
-        retval = self.proc.poll()
-        if retval is None:
-            return True
-        self.return_value = self.proc.returncode
-        return False
+        return self.alive
 
     def kill(self):
         if self.proc is not None:
@@ -93,14 +135,6 @@ class AppEventProxy(object):
         self.user_name = user_name
         self.application_name = application_name
         self.events = []
-
-        # Create our EventSource event.  This is the event we will
-        # use to send out all valid, received events from the application.
-        # At this point, we really dont know what type of events the
-        # application will be sending, so we create our first event of
-        # type NULL.  By creating this event here, we are hurrying up the
-        # process of event source discovery.
-        self.__create_event("null", "NULL")
         self.zsocket = zsocket.ZSocketServer(zmq.PULL,
                                              "ipc",
                                              ":".join([user_name,
@@ -182,7 +216,7 @@ def test1():
     is_running = app.is_running()
     assert(is_running is True)
 
-    time.sleep(20)
+    time.sleep(120)
 
     app.stop()
     time.sleep(1)
