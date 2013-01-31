@@ -109,10 +109,12 @@ class AppExec(object):
 
 class JavaAppExec(AppExec):
 
+    system_jars = ["DukascopyController-1.0-SNAPSHOT.jar"]
+
     def __init__(self, jarfiles, mainappname, args, cwd=None):
         AppExec.__init__(self, cwd)
 
-        classpath = ":".join(jarfiles)
+        classpath = ":".join(jarfiles + self.system_jars)
         self.cmdline = ['java',
                         '-classpath',
                         classpath,
@@ -227,6 +229,12 @@ class AppFileLoader(object):
     def __init__(self, file_name, md5):
         self.file_name = file_name
         self.md5_sum = md5
+        self.f = None
+
+    def __del__(self):
+        if self.f is not None:
+            self.f.close()
+            self.f = None;
 
     def exists(self):
         md5 = self.calc_md5()
@@ -244,9 +252,204 @@ class AppFileLoader(object):
         if out_str != "":
             md5, sep, out_str = out_str.partition(" ")
             return md5
-        if err_str != "":
-            Llog.LogError("md5sum: error: " + err_str)
         return None
+
+    def load_file_start(self):
+        if self.f is not None:
+            self.f.close()
+            self.f = None
+
+        try:
+            self.f = open(self.file_name, 'w+')
+        except:
+            Llog.LogError("Cannot open file ("
+                          + self.file_name + ") for writting!")
+            return False
+        return True
+
+    def file_chunk(self, file_bytes):
+        assert(self.f is not None)
+        self.f.write(file_bytes)
+
+    def load_file_complete(self):
+        if self.f is not None:
+            self.f.close()
+            self.f = None;
+
+
+class AppControllerProtocol(object):
+
+    protocol_signature = ["40a53bappctrl"]
+    protocol_cmds = ["HELLO",
+                     "LOAD",
+                     "CHUNK",
+                     "RUN",
+                     "STOP",
+                     "STOPPED",
+                     "DIED"]
+
+
+class AppControllerProtocolServer(object):
+    """
+        The AppControllerProtocol is the protocol which is used
+        by the user agent to control all aspects of application
+        execution, including the loading of the executable images.
+        A typical protocol message flow would be:
+
+         user --->  HELLO                   ---> controller
+             The server can be either empty, as in just started up,
+             or loaded, with a valid application file or
+             running, with the specified application file and md5.
+         user <---  HELLO <ready> <0>       <--- controller
+         user <---  HELLO <loaded> <md5>    <--- controller
+         user <---  HELLO <running> <md5>   <--- controller
+
+         user --->  LOAD <filename,md5> ---> controller
+         user <---    LOAD unknown      <--- controller
+             The controller does not have this file, or the md5 does
+             not match.  The user must chunk the file to the
+             controller.
+         user --->  CHUNK <size,bytes>  ---> controller
+         user --->  CHUNK <size,bytes>  ---> controller
+         user --->  CHUNK <size,bytes>  ---> controller
+         user <---  CHUNK <ok,length>   <--- controller
+         user --->  CHUNK <size,bytes>  ---> controller
+         user --->  CHUNK <size,bytes>  ---> controller
+         user <---  CHUNK <ok,length>   <--- controller
+             All bytes have been received.  The controller now 
+             acknowledges the presense of the original file.
+         user --->  LOAD <filename,md5> ---> controller
+         user <---  LOAD <filename,md5> <--- controller
+         user --->  RUN <command>       ---> controller
+         user <---  RUNNING             <--- controller
+         user --->  STOP                ---> controller
+         user <---  STOPPED             <--- controller
+         user --->  RUN <command>       ---> controller
+         user <---  RUNNING             <--- controller
+         user <---  EVENT               <--- controller
+         user <---  EVENT               <--- controller
+         user <---  EVENT               <--- controller
+         user <---  EVENT               <--- controller
+             If the application stops on its own, the user receives
+             the FINISHED message.
+         user <---  FINISHED            <--- controller
+             If the application crashes, or returns a non-zero value
+             to the shell, a DIED message is returned.
+         user <---  DIED <return code>  <--- controller
+         user --->  STOP                ---> controller
+         user <---  STOPPED             <--- controller
+         ...
+             If the user sends a bad message...
+         user --->  LAOD                ---> controller
+         user <---  BADMSG              <--- controller
+    """
+    port_range = [12500,14500]
+    protocol_errors = vitals.VStatError(
+                                "protocol_errors",
+                                "AppController protocol errors")
+
+    def __init__(self, user_name, application_name):
+        self.user_name = user_name
+        self.application_name = application_name
+        self.app_loader = None
+        self.app_exec = None
+
+        self.zsocket = zsocket.ZSocketServer(zmq.ROUTER,
+                                    "tcp",
+                                    "*",
+                                    self.port_range,
+                                    AppControllerProtocol.protocol_signature)
+        self.zsocket.bind()
+        self.interface = interface.Interface(self.protocol_msg_cback)
+        self.interface.add_socket(self.zsocket)
+
+    def __del__(self):
+        self.reset()
+
+    def reset(self):
+        if self.app_exec is not None:
+            self.app_exec.stop()
+            self.app_exec = None
+        if self.app_loader is not None:
+            self.app_loader.load_file_complete()
+            self.app_loader = None
+
+    def protocol_msg_cback(self, msg):
+        cmd, sep, msg = msg.partition(" ")
+        if cmd not in AppControllerProtocol.protocol_cmds:
+            self.protocol_errors++
+            self.badmsg()
+            return
+
+        if cmd == "HELLO":
+            # Start of command sequence.  Reset, just to be sure.
+            self.reset()
+            self.zsocket.send("HELLO")
+        elif cmd == "LOAD":
+            file_name, sep, msg = msg.partition(" ")
+            if file_name == "":
+                self.protocol_errors++
+                self.badmsg()
+                return
+            md5sum, sep, msg = msg.partition(" ")
+            if md5sum == "":
+                self.protocol_errors++
+                self.badmsg()
+                return
+            # Check to see if we have the file already.  If not,
+            # send back the 'unknown' message
+            self.app_loader = AppFileLoader(file_name, md5sum)
+            if self.app_loader.exists() is True:
+                self.app_loader.load_file_complete()
+                self.app_loader = None
+                self.zsocket.send("LOAD " + file_name + " " + md5sum)
+            else:
+                # We do not have the specified file.  Prepare to
+                # receive file chunks...
+                self.app_loader.load_file_start()
+                self.zsocket.send("LOAD unknown")
+        elif cmd == "CHUNK":
+            if self.app_loader is None:
+                self.protocol_errors++
+                self.badmsg()
+                return
+
+            # If we already have the file, we should not be
+            # receiving chunks.
+            if self.app_loader.exists() is True:
+                self.protocol_errors++
+                self.badmsg()
+                return
+
+            self.app_loader.file_chunk(msg)
+            self.zsocket.send("CHUNK ok")
+        elif cmd == "RUN":
+            if self.app_loader is None:
+                self.protocol_errors++
+                self.badmsg()
+                return
+
+            # We should have the app file now.
+            if self.app_loader.exists() is not True:
+                self.protocol_errors++
+                self.badmsg()
+                return
+
+            if self.app_exec is not None:
+                self.app_exec.stop()
+                self.app_exec = None
+
+            command = msg
+            # Start up our event proxy
+            self.app_proxy = AppEventProxy(self.user_name,
+                                           self.application_name)
+
+            self.app_exec = JavaAppExec([self.app_loader.file_name],
+                                        command,
+                                        [self.user_name, self.application_name])
+            self.app_exec.run()
+            time.sleep(1)
+            self.zsocket.send("RUNNING")
 
 
 def test1():
@@ -262,8 +465,7 @@ def test1():
     # Give the proxy event a bit of time for discovery
     time.sleep(3)
 
-    app = JavaAppExec(["HelloWorld-1.0-SNAPSHOT.jar",
-                       "DukascopyController-1.0-SNAPSHOT.jar"],
+    app = JavaAppExec(["HelloWorld-1.0-SNAPSHOT.jar"]
                       "com.mycompany.HelloWorld.App",
                       [user_name, app_name],
                       ".")
@@ -293,6 +495,9 @@ def test2():
         print "md5: " + md5
     else:
         print "Cannot calculate md5"
+
+    assert(app_loader.exists() is True)
+    print "test2() PASSED"
 
 
 if __name__ == '__main__':
