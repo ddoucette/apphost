@@ -9,18 +9,28 @@
     basic packet framing - All send/recv APIs provide a list of
                     strings for TX/RX.  The ZSocket provides framing,
                     which is not the same as the message framing
-                    provided by ZMQ.  The ZSocket will use string-based
-                    framing and escaping (where necessary).
+                    provided by ZMQ.
 
     A ZSocket protocol frame looks like this:
 
-    length%signature%item0%item1% .. %itemX
+    signature:s1:s2:s3:s4:...:sXitem0item1 .. itemX
 
-    The % character is used for delimiting, with a % character used
-    for escaping % in strings.  I.e an actual % will be encoded as %%.
+    Following the signature are the indices for the start of each message field.
+    This allows multiple fields without in-band escaping.
+    For debugging, optional white-space characters may be inserted to allow the
+    messages to be more easily debugged.
+
+    The send function accepts a dictionary as input, specifying the message
+    and the optional address.
+    The recv function returns a dictionary with the message and address.
+
 """
 import zmq
 import types
+import zhelpers
+import random
+import string
+
 from local_log import *
 
 
@@ -56,7 +66,7 @@ class ZSocket():
 
         assert(socket_type in self.socket_types)
         if signature is not None:
-            assert(isinstance(protocol_headers, types.StringType))
+            assert(isinstance(signature, types.StringType))
             # Make sure the signature does not have our delimiting
             # character.
 
@@ -110,18 +120,62 @@ class ZSocket():
             return None
 
         address = msg[0]
-        msg_str = msg[2].lstrip()
+        msg_list = self.__parse_message(msg[2])
+        return {'address': address, 'message':msg_list}
 
-        for header in self.protocol_headers:
-            (msghdr, sep, msg_str) = msg_str.partition(" ")
-            if msghdr != header:
-                Llog.LogError("Invalid protocol header received!" +
-                               "(" + msghdr + ")")
+    def __parse_message(self, msg):
+        # Message format:
+        # signature:idx1:idx2:idxN+MSG
+        # The + sign separates header from actual message.
+        # The indices separate the parts of the message.
+        header, sep, msg = msg.partition('+')
+        if header == "":
+            Llog.LogDebug("Invalid header received!")
+            self.stats.rx_err_bad_header += 1
+            return None
+
+        Llog.LogDebug("Received header: " + header + " : msg " + msg)
+        signature, sep, header = header.partition(':')
+        if signature != self.signature:
+            Llog.LogDebug("Invalid signature received! (" + signature + ")")
+            self.stats.rx_err_bad_header += 1
+            return None
+
+        msg_list = []
+        last_msg_end = 0
+        i = 0
+        # Parse through the start field indices and peel out the sub-strings.
+        while True:
+            length, sep, header = header.partition(':')
+            if sep == "":
+                break
+            field_length = int(length)
+
+            Llog.LogDebug("MSG-" + str(i) + " ==> " + str(length))
+
+            msg_begin = last_msg_end
+            msg_end = msg_begin + field_length
+            if msg_end > len(msg):
+                Llog.LogDebug("Invalid message index! (" + str(i) + ")")
                 self.stats.rx_err_bad_header += 1
                 return None
+            msg_list.append(msg[msg_begin:msg_end])
+            last_msg_end = msg_end
+            i += 1
 
         self.stats.rx_ok += 1
-        return [address, msg_str]
+        return msg_list
+
+    def __construct_message(self, msg):
+        assert(isinstance(msg, types.ListType))
+        msg_lengths = []
+        for msg_str in msg:
+            msg_lengths.append(str(len(msg_str)))
+
+        header = ":".join([self.signature] + msg_lengths)
+        header += ":"
+        msg_str = "".join(msg)
+        return "+".join([header, msg_str])
 
     def __recv(self):
         assert(self.socket_type != zmq.ROUTER)
@@ -132,17 +186,10 @@ class ZSocket():
         if msg is None:
             return None
 
-        msg = msg.lstrip()
-        for header in self.protocol_headers:
-            (msghdr, sep, msg) = msg.partition(" ")
-            if msghdr != header:
-                Llog.LogError("Invalid protocol header received!" +
-                               "(" + msghdr + ")")
-                self.stats.msgs_err_rx_bad_header += 1
-                return None
-
-        self.stats.rx_ok += 1
-        return msg
+        msg_list = self.__parse_message(msg)
+        if msg_list is None:
+            return None
+        return {'address': "", 'message':msg_list}
 
     def recv(self):
         assert(self.socket is not None)
@@ -154,44 +201,33 @@ class ZSocket():
         Llog.LogDebug("Received: " + str(msg))
         return msg
 
-    def __send_multipart(self, msg):
+    def __send_multipart(self, address, msg):
         assert(self.socket is not None)
         assert(self.socket_type == zmq.ROUTER)
-
-        # The multipart send contains the address for the destination
-        # and the message in a 2-entry list
-        assert(len(msg) == 2)
-
-        # Insert the protocol headers, if we have any
-        if len(self.protocol_headers) > 0:
-            sendmsg = "".join(self.protocol_headers) + " " + msg[1]
-        else:
-            sendmsg = msg[1]
-
-        Llog.LogDebug("Sending to " + msg[0] + " <" + sendmsg + ">")
-        self.socket.send_multipart([msg[0], '', sendmsg])
+        Llog.LogDebug("Sending to " + address + " <" + msg + ">")
+        self.socket.send_multipart([address, '', msg])
         self.stats.tx_ok += 1
 
     def __send(self, msg):
         assert(self.socket_type != zmq.ROUTER)
         assert(isinstance(msg, types.StringType))
-
-        if len(self.protocol_headers) > 0:
-            sendmsg = "".join(self.protocol_headers) + " " + msg
-        else:
-            sendmsg = msg
-
-        Llog.LogDebug("Sending... <" + sendmsg + ">")
-        self.socket.send(sendmsg)
+        Llog.LogDebug("Sending... <" + msg + ">")
+        self.socket.send(msg)
         self.stats.tx_ok += 1
 
     def send(self, msg):
         assert(self.socket is not None)
+        assert(isinstance(msg, types.DictType))
+
+        # Message format:
+        # msg['address'] == address
+        # msg['message'] = list of message pieces
+        msg_str = self.__construct_message(msg['message'])
 
         if self.socket_type == zmq.ROUTER:
-            self.__send_multipart(msg)
+            self.__send_multipart(msg['address'], msg_str)
         else:
-            self.__send(msg)
+            self.__send(msg_str)
 
 
 class ZSocketServer(ZSocket):
@@ -200,7 +236,7 @@ class ZSocketServer(ZSocket):
                        protocol_name,
                        bind_address,
                        port_range=[],
-                       protocol_headers=[]):
+                       signature=""):
         assert(bind_address != "")
         assert(protocol_name in ["tcp", "ipc"])
 
@@ -213,7 +249,7 @@ class ZSocketServer(ZSocket):
         if len(port_range) == 2:
             assert(port_range[0] < port_range[1])
 
-        ZSocket.__init__(self, socket_type, protocol_headers)
+        ZSocket.__init__(self, socket_type, signature)
 
         self.bind_address = bind_address
         self.port_range = port_range
@@ -268,14 +304,14 @@ class ZSocketClient(ZSocket):
                        protocol_name,
                        address,
                        port=0,
-                       protocol_headers=[]):
+                       signature=""):
         assert(address != "")
         assert(protocol_name in ["tcp", "ipc"])
 
         if protocol_name == "tcp":
             assert(port > 0 and port < 65536)
 
-        ZSocket.__init__(self, socket_type, protocol_headers)
+        ZSocket.__init__(self, socket_type, signature)
 
         self.address = address
         self.protocol_name = protocol_name
@@ -292,8 +328,8 @@ class ZSocketClient(ZSocket):
 
 def test1():
 
-    c = ZSocketClient(zmq.REQ, "tcp", "127.0.0.1", 4321)
-    s = ZSocketServer(zmq.REP, "tcp", "*", [4321, 4323])
+    c = ZSocketClient(zmq.REQ, "tcp", "127.0.0.1", 4321, "mysig")
+    s = ZSocketServer(zmq.REP, "tcp", "*", [4321, 4323], "mysig")
 
     assert(c is not None)
     assert(s is not None)
@@ -301,10 +337,29 @@ def test1():
     s.bind()
     c.connect()
 
-    tx_msg = "hello there..."
-    c.send(tx_msg)
-    msg = s.recv()
-    assert(msg == tx_msg)
+    msg_strings = ["hello there...", "this %%-   -2(  ~~  #$*&$#*&$", "!!~~~@@#(#($dkfkdsa"]
+    c.send({'message': msg_strings})
+    msg = s.recv()['message']
+    for i in range(len(msg)):
+        assert(msg_strings[i] == msg[i])
+
+    s.send({'message': ["OK"]})
+    msg = c.recv()['message']
+    assert(msg[0] == "OK")
+
+    msg_strings = []
+    for i in range(25):
+        msg_strings.append(''.join(random.choice(string.ascii_uppercase
+                                                    + string.digits)
+                                                    for x in range(12)))
+    c.send({'message': msg_strings})
+    msg = s.recv()['message']
+    for i in range(len(msg)):
+        assert(msg_strings[i] == msg[i])
+
+    s.send({'message': ["OK"]})
+    msg = c.recv()['message']
+    assert(msg[0] == "OK")
 
     c.close()
     s.close()
@@ -317,42 +372,38 @@ def test2():
     clist = []
     nr_clients = 100
 
-    s = ZSocketServer(zmq.ROUTER, "tcp", "*", [4321, 4323], ["MYPROTO"])
+    s = ZSocketServer(zmq.ROUTER, "tcp", "*", [4321, 4323], "MYPROTO")
     assert(s is not None)
     s.bind()
 
     i = 0
     while i < nr_clients:
-        c = ZSocketClient(zmq.REQ, "tcp", "127.0.0.1", 4321, ["MYPROTO"])
+        c = ZSocketClient(zmq.REQ, "tcp", "127.0.0.1", 4321, "MYPROTO")
         assert(c is not None)
         clist.append(c)
         c.connect()
         i += 1
 
+    # Have the clients send a message to the server/router
     tx_msg = "hello there..."
-    i = 0
-    while i < nr_clients:
-        msg = tx_msg + ":" + str(i)
+    for i in range(len(clist)):
         c = clist[i]
-        c.send(msg)
-        i += 1
+        c.send({'message':[tx_msg, str(i)]})
 
-    i = 0
-    while i < nr_clients:
+    # Server/router appends a simple OK-done string, as another message string
+    for i in range(len(clist)):
         msg = s.recv()
-        address, msg_text = msg[0:2]
-        msg_text += " - processed"
-        s.send([address, msg_text])
-        i += 1
+        msg['message'].append("OK-done")
+        s.send(msg)
 
-    i = 0
-    while i < nr_clients:
-        rx_msg = tx_msg + ":" + str(i) + " - processed"
+    # Clients receive the augmented message and verify 
+    for i in range(len(clist)):
         c = clist[i]
-        msg = c.recv()
-        assert(msg == rx_msg)
+        msg = c.recv()['message']
+        assert(msg[0] == tx_msg)
+        assert(msg[1] == str(i))
+        assert(msg[2] == "OK-done")
         c.close()
-        i += 1
 
     s.close()
     print "test2() - PASSED"
@@ -378,8 +429,8 @@ def test3():
     c.connect()
 
     tx_msg = "hello there..."
-    c.send(tx_msg)
-    msg = s.recv()
+    c.send({'message':[tx_msg]})
+    msg = s.recv()['message'][0]
     assert(msg == tx_msg)
 
     c.close()
@@ -402,9 +453,9 @@ def test4():
     cpull.connect()
 
     tx_msg = "hello there..."
-    spush.send(tx_msg)
+    spush.send({'message':[tx_msg]})
 
-    msg = cpull.recv()
+    msg = cpull.recv()['message'][0]
     assert(msg == tx_msg)
 
     cpull.close()
@@ -422,9 +473,9 @@ def test4():
     cpush.connect()
 
     tx_msg = "hello there..."
-    cpush.send(tx_msg)
+    cpush.send({'message':[tx_msg]})
 
-    msg = spull.recv()
+    msg = spull.recv()['message'][0]
     assert(msg == tx_msg)
 
     cpush.close()
@@ -446,9 +497,9 @@ def test5():
     cpull.connect()
 
     tx_msg = "hello there..."
-    spush.send(tx_msg)
+    spush.send({'message':[tx_msg]})
 
-    msg = cpull.recv()
+    msg = cpull.recv()['message'][0]
     assert(msg == tx_msg)
 
     cpull.close()
@@ -466,9 +517,9 @@ def test5():
     cpush.connect()
 
     tx_msg = "hello there..."
-    cpush.send(tx_msg)
+    cpush.send({'message':[tx_msg]})
 
-    msg = spull.recv()
+    msg = spull.recv()['message'][0]
     assert(msg == tx_msg)
 
     cpush.close()
@@ -476,9 +527,56 @@ def test5():
     print "test5() - PASSED"
 
 
+def test6():
+
+    # Binary file chunking...
+    spush = ZSocketServer(zmq.PUSH, "ipc", "test5-push.ipc")
+
+    assert(spush is not None)
+    spush.bind()
+
+    cpull = ZSocketClient(zmq.PULL, "ipc", "test5-push.ipc")
+    assert(cpull is not None)
+    cpull.connect()
+
+    nr_chunks = 0
+    chunksize = 1000
+    with open("testfile.bin", "rb") as f:
+        while True:
+            chunk = f.read(chunksize)
+            if chunk:
+                spush.send({'message':["CHUNK", str(nr_chunks), chunk]})
+                nr_chunks += 1
+            else:
+                break
+        f.close()
+
+    i = 0
+    with open("testfile-recv.bin", "w+") as f:
+        while True:
+            msg = cpull.recv()['message']
+            assert(msg[0] == "CHUNK")
+            f.write(msg[2])
+            i += 1
+            if i == nr_chunks:
+                break
+        f.close()
+
+    cpull.close()
+    spush.close()
+
+    # Run md5sum on both files to ensure they are identical
+    tx_md5 = zhelpers.md5sum("testfile.bin")
+    rx_md5 = zhelpers.md5sum("testfile-recv.bin")
+    assert(tx_md5 == rx_md5 and rx_md5 is not None)
+
+    print "test6() - PASSED"
+
+
 if __name__ == '__main__':
-    test1()
-    test2()
-    test3()
-    test4()
-    test5()
+    #test1()
+    #test2()
+    #test3()
+    #test4()
+    #test5()
+    test6()

@@ -6,6 +6,7 @@ Helper module for example applications. Mimics ZeroMQ Guide's zhelpers.h.
 import binascii
 import os
 import socket
+import subprocess
 from random import randint
 
 import zmq
@@ -85,3 +86,15 @@ def get_local_ipaddr():
 
     s.close()
     return addr
+
+def md5sum(file_name):
+    proc = subprocess.Popen(['md5sum', file_name],
+                                     stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE,
+                                     cwd=".",
+                                     env=None)
+    out_str, err_str = proc.communicate()
+    if out_str != "":
+        md5, sep, out_str = out_str.partition(" ")
+        return md5
+    return None
