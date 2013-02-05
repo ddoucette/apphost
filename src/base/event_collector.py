@@ -1,7 +1,7 @@
 """
     EventCollector
 """
-import zsocket
+import zsocket2
 import zhelpers
 import interface
 import zmq
@@ -35,41 +35,21 @@ class EventCollector():
 
     @staticmethod
     def event_msg_parse(msg):
-        event_type, sep, msg = msg.partition(" ")
-        if event_type == "":
-            Llog.LogError("Invalid event type received!")
+        msg_list = msg['message']
+        if len(msg_list) < 5:
+            Llog.LogError(
+                "Invalid/short message received! (" + len(msg_list) +")")
             return None
 
-        event_name, sep, msg = msg.partition(" ")
-        if event_name == "":
-            Llog.LogError("Invalid event name received!")
-            return None
-
-        timestamp, sep, msg = msg.partition(" ")
-        if timestamp == "":
-            Llog.LogError("Invalid timestamp received!")
-            return None
-
-        user_name, sep, msg = msg.partition(" ")
-        if user_name == "":
-            Llog.LogError("Invalid user name received!")
-            return None
-
-        app_name, sep, msg = msg.partition(" ")
-        if app_name == "":
-            Llog.LogError("Invalid application name received!")
-            return None
-
-        event = {'type': event_type,
-                 'name': event_name,
-                 'timestamp': timestamp,
-                 'user_name': user_name,
-                 'application_name': app_name,
-                 'contents': msg}
+        event = {'type': msg_list[0],
+                 'name': msg_list[1],
+                 'timestamp': msg_list[2],
+                 'user_name': msg_list[3],
+                 'application_name': msg_list[4],
+                 'contents': msg[4:]}
         return event
 
     def msg_cback(self, msg):
-
         event = EventCollector.event_msg_parse(msg)
         if event is None:
             Llog.LogError("Could not parse event message!: " + str(msg))
@@ -83,7 +63,6 @@ class EventCollector():
         # to it, given our username and app_name settings.
         # If we have an empty username and/or appname, we
         # will subscribe to every EVENT service.
-
         if service.service_name != "EVENT":
             return
 
@@ -113,7 +92,8 @@ class EventCollector():
         zsock = zsocket.ZSocketClient(zmq.SUB,
                                       "tcp",
                                       addr_info['address'],
-                                      addr_info['port'])
+                                      addr_info['port'],
+                                      "EVENT")
         assert(zsock is not None)
         zsock.connect()
         self.interface.add_socket(zsock)

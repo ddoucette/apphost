@@ -9,7 +9,7 @@ import time
 import zmq
 import zhelpers
 import types
-import zsocket
+import zsocket2
 
 
 class Interface(object):
@@ -30,14 +30,17 @@ class Interface(object):
         self.thread.daemon = True
         self.thread.start()
 
-    def add_socket(self, zsocket):
-        assert(zsocket is not None)
-        assert(zsocket not in self.sockets)
-        assert(zsocket.socket is not None)
+    def add_socket(self, zskt):
+        assert(zskt is not None)
+        assert(zskt not in self.sockets)
+        assert(zskt.socket is not None)
 
-        self.sockets.append(zsocket)
-        self.poller.register(zsocket.socket, zmq.POLLIN)
+        self.sockets.append(zskt)
+        self.poller.register(zskt.socket, zmq.POLLIN)
         # Unblock the interface thread with a PASS message.
+        # Our processing thread is most likely blocked on
+        # the old list of sockets.  Now that we have a new one,
+        # unblock the thread so it will begin processing this one.
         self.__push_in_msg_raw(["PASS"])
 
     def find_socket_by_location(self, location):
@@ -46,28 +49,31 @@ class Interface(object):
                 return socket
         return None
 
-    def remove_socket(self, zsocket):
-        assert(zsocket in self.sockets)
+    def remove_socket(self, zskt):
+        assert(zskt in self.sockets)
 
         for index, socket in enumerate(self.sockets):
-            if socket == zsocket:
-                self.poller.unregister(zsocket.socket)
+            if socket == zskt:
+                self.poller.unregister(zskt.socket)
                 self.sockets.pop(index)
                 # Unblock the interface thread with a PASS message.
                 self.__push_in_msg_raw(["PASS"])
                 return
 
         Llog.LogError("Cannot find socket: <"
-                      + str(zsocket) + "> in registered socket list!")
+                      + str(zskt) + "> in registered socket list!")
         assert(False)
 
     # Send a message to the interface thread from the API layer
     def push_in_msg(self, msg):
-        if isinstance(msg, types.ListType) is True:
-            cmd = ["MSG", ''] + msg
-        else:
-            cmd = ["MSG", msg]
+        assert(isinstance(msg, types.DictType) is True)
+        assert('message' in msg)
 
+        if 'address' in msg:
+            address = msg['address']
+        else:
+            address = ""
+        cmd = ["MSG", address] + msg['message']
         self.__push_in_msg_raw(cmd)
 
     def close(self):
@@ -114,9 +120,9 @@ class Interface(object):
                 self.__process_command_pipe()
             else:
                 # Check to see if any of our sockets are now readable
-                for zsocket in self.sockets:
-                    if zsocket.socket in items:
-                        self.__process_socket(zsocket)
+                for zskt in self.sockets:
+                    if zskt.socket in items:
+                        self.__process_socket(zskt)
 
     def __process_socket(self, socket):
         msg = socket.recv()
@@ -136,11 +142,6 @@ class Interface(object):
         #  MSG - protocol message
         #  KILL - kill message
         #  PASS - do nothing.  Simply unblocks the processing thread.
-        #
-        #  The format of all multi-part commands are:
-        #   ['CMDSTR', '', 'msgpart', 'msgpart', ...]
-        #  The format of all string commands are:
-        #   ['CMDSTR', 'msg-string']
 
         if msg[0] == "PASS":
             # Null message meant to unblock the thread.
@@ -157,17 +158,12 @@ class Interface(object):
             # to.
             assert(len(self.sockets) == 1)
 
-            if len(msg) == 2:
-                # String-based message
-                msgtxt = str(msg[1])
-                print "Sending: " + msgtxt
-                msg = msgtxt
-            else:
-                msg = msg[2:]
-                print "Sending: " + str(msg)
-
-            self.sockets[0].send(msg)
-
+            # The message should be a list of strings, with the
+            # first entry being the address to send the message to.
+            assert(len(msg) >= 1)
+            address = msg[1]
+            msg_list = msg[2:]
+            self.sockets[0].send({'address':address, 'message':msg_list})
         else:
             Llog.LogError("Invalid message header! (" + msg[0] + ")")
             assert(False)
@@ -182,51 +178,49 @@ def test1():
     class MyServer():
         def __init__(self, name, port):
             self.name = name
-            server = zsocket.ZSocketServer(zmq.ROUTER,
+            server = zsocket2.ZSocketServer(zmq.ROUTER,
                                            "tcp",
                                            "*",
                                            [port],
-                                           ["MYPROTO"])
+                                           "MYPROTO")
             server.bind()
             self.interface = Interface(self.handle_proto_req)
             self.interface.add_socket(server)
 
         def handle_proto_req(self, msg):
-            address, msgtxt = msg[0:2]
-            print "Received from " + str(address) + " : " + msgtxt
-            msgtxt += " ok"
-            self.interface.push_in_msg([address, msgtxt])
+            address = msg['address']
+            msglist = msg['message']
+            print "Received from " + str(address) + " : " + str(msglist)
+            msglist.append("ok")
+            self.interface.push_in_msg(msg)
 
     class MyClient():
         def __init__(self, name, port):
             self.name = name
-            client = zsocket.ZSocketClient(zmq.REQ,
+            client = zsocket2.ZSocketClient(zmq.REQ,
                                            "tcp",
                                            "127.0.0.1",
                                            port,
-                                           ["MYPROTO"])
+                                           "MYPROTO")
             client.connect()
             self.interface = Interface(self.handle_proto_msg)
             self.interface.add_socket(client)
             self.done = False
 
         def handle_proto_msg(self, msg):
-            print "Response: " + msg
-
-            (name, sep, msg) = msg.partition(" ")
-            assert(name == self.name)
-            (msg, sep, ok) = msg.rpartition(" ")
-            assert(ok == "ok")
+            assert(msg['message'][0] == self.name)
+            assert(msg['message'][-1] == "ok")
             self.done = True
 
         def do_something(self):
-            self.interface.push_in_msg(self.name + " - do - something")
+            self.interface.push_in_msg(
+                            {'message':[self.name, " - do - something"]})
 
     s = MyServer("srv", 5000)
     c = MyClient("cli", 5000)
 
     c.do_something()
-    time.sleep(5)
+    time.sleep(2)
     assert(c.done is True)
     print "PASSED"
 

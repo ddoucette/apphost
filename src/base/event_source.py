@@ -22,7 +22,7 @@
     connected to this server.
 
 """
-import zsocket
+import zsocket2
 import zhelpers
 import interface
 import zmq
@@ -40,6 +40,7 @@ class EventSocket(object):
         send all EVENT messages.
     """
     port_range = [7000, 8000]
+    init_sleep_period = 5
 
     def __init__(self, user_name, application_name):
 
@@ -49,7 +50,8 @@ class EventSocket(object):
         self.zsocket = zsocket.ZSocketServer(zmq.PUB,
                                              "tcp",
                                              "*",
-                                             self.port_range)
+                                             self.port_range,
+                                             "EVENT")
         self.zsocket.bind()
         self.interface = interface.Interface()
         self.interface.add_socket(self.zsocket)
@@ -74,7 +76,7 @@ class EventSocket(object):
         # our software may immediately send some start-up events which
         # will most definitely be lost because no one has had a chance
         # to subscribe
-        time.sleep(3)
+        time.sleep(self.init_sleep_period)
 
     def send(self, msg):
         self.interface.push_in_msg(msg)
@@ -104,13 +106,13 @@ class EventSource(object):
         assert(self.socket is not None)
 
     def send(self, contents):
+        assert(isinstance(contents, types.ListType))
         timestamp = time.strftime("%x-%X")
-        msg = " ".join([self.event_type,
-                        self.event_name,
-                        timestamp,
-                        self.user_name,
-                        self.application_name,
-                        contents])
+        msg = {'message':[self.event_type,
+                          self.event_name,
+                          timestamp,
+                          self.user_name,
+                          self.application_name] + contents}
         self.socket.send(msg)
 
     @staticmethod

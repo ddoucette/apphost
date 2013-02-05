@@ -103,26 +103,6 @@ class ZSocket():
         Llog.LogDebug("Subscribing to <" + subscription + ">")
         self.socket.setsockopt(zmq.SUBSCRIBE, subscription)
 
-    def __recv_multipart(self):
-        assert(self.socket is not None)
-        assert(self.socket_type == zmq.ROUTER)
-
-        msg = self.socket.recv_multipart()
-        if msg is None:
-            return None
-
-        # Router messages received are always the following
-        # format:
-        # ['address', '', 'contents']
-        if len(msg) != 3:
-            Llog.LogInfo("Invalid message received! " + str(msg))
-            self.stats.rx_err_short += 1
-            return None
-
-        address = msg[0]
-        msg_list = self.__parse_message(msg[2])
-        return {'address': address, 'message':msg_list}
-
     def __parse_message(self, msg):
         # Message format:
         # signature:idx1:idx2:idxN+MSG
@@ -190,6 +170,26 @@ class ZSocket():
         if msg_list is None:
             return None
         return {'address': "", 'message':msg_list}
+
+    def __recv_multipart(self):
+        assert(self.socket is not None)
+        assert(self.socket_type == zmq.ROUTER)
+
+        msg = self.socket.recv_multipart()
+        if msg is None:
+            return None
+
+        # Router messages received are always the following
+        # format:
+        # ['address', '', 'contents']
+        if len(msg) != 3:
+            Llog.LogInfo("Invalid message received! " + str(msg))
+            self.stats.rx_err_short += 1
+            return None
+
+        address = msg[0]
+        msg_list = self.__parse_message(msg[2])
+        return {'address': address, 'message':msg_list}
 
     def recv(self):
         assert(self.socket is not None)
@@ -324,6 +324,11 @@ class ZSocketClient(ZSocket):
         if self.protocol_name == "tcp":
             self.location += ":" + str(self.port)
         self.socket.connect(self.location)
+
+        # If this is a subscription socket, we need/should subscribe
+        # to our protocol signature.
+        if self.socket_type == zmq.SUB:
+            self.subscribe(self.signature)
 
 
 def test1():
@@ -574,9 +579,9 @@ def test6():
 
 
 if __name__ == '__main__':
-    #test1()
-    #test2()
-    #test3()
-    #test4()
-    #test5()
+    test1()
+    test2()
+    test3()
+    test4()
+    test5()
     test6()
