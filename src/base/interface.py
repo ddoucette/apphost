@@ -9,7 +9,8 @@ import time
 import zmq
 import zhelpers
 import types
-import zsocket2
+import zsocket
+from local_log import *
 
 
 class Interface(object):
@@ -68,6 +69,11 @@ class Interface(object):
     def push_in_msg(self, msg):
         assert(isinstance(msg, types.DictType) is True)
         assert('message' in msg)
+
+        # We must ensure each message entry is string-ifyed
+        msglist = msg['message']
+        for i in range(len(msglist)):
+            msglist[i] = str(msglist[i])
 
         if 'address' in msg:
             address = msg['address']
@@ -128,7 +134,10 @@ class Interface(object):
         msg = socket.recv()
         if msg is None:
             return
-        assert(self.protocol_rx_cback)
+        assert('message' in msg)
+
+        if self.protocol_rx_cback is None:
+            return
         self.protocol_rx_cback(msg)
 
     def __process_command_pipe(self):
@@ -178,7 +187,7 @@ def test1():
     class MyServer():
         def __init__(self, name, port):
             self.name = name
-            server = zsocket2.ZSocketServer(zmq.ROUTER,
+            server = zsocket.ZSocketServer(zmq.ROUTER,
                                            "tcp",
                                            "*",
                                            [port],
@@ -197,7 +206,7 @@ def test1():
     class MyClient():
         def __init__(self, name, port):
             self.name = name
-            client = zsocket2.ZSocketClient(zmq.REQ,
+            client = zsocket.ZSocketClient(zmq.REQ,
                                            "tcp",
                                            "127.0.0.1",
                                            port,

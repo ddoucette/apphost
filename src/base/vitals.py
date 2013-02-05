@@ -60,10 +60,8 @@ class VStatEvent(object):
         self.vstat_type = vstat_type
 
     def send(self, values):
-        values_str = ":".join(values)
-        msg = ":".join([self.vstat_type,
-                        self.description,
-                        values_str])
+        msg = [self.vstat_type,
+               self.description] + values
         self.event.send(msg)
 
     @staticmethod
@@ -74,14 +72,14 @@ class VStatEvent(object):
         assert(event['contents'] != "")
 
         msg = event['contents']
-        vital_type, sep, msg = msg.partition(":")
-        description, sep, msg = msg.partition(":")
+        if len(msg) < 2:
+            return False
 
         # The remainder of the msg is the values.  The parsing
         # of the values is specific to the sub-class.
-        event['vital_type'] = vital_type
-        event['description'] = description
-        event['values'] = msg
+        event['vital_type'] = msg[0]
+        event['description'] = msg[1]
+        event['values'] = msg[2:]
 
 
 class VStatErrorEvent(VStatEvent):
@@ -90,20 +88,16 @@ class VStatErrorEvent(VStatEvent):
         VStatEvent.__init__(self, name, "ERROR", description)
 
     def send(self, value, delta):
-        values = [str(value), str(delta)]
-        VStatEvent.send(self, values)
+        VStatEvent.send(self, [value, delta])
 
     @staticmethod
     def decode(event):
-        VStatEvent.decode(event)
-        try:
-            value, delta = event['values'].split(":")
-        except:
-            Llog.LogError("Could not parse ERROR VStat: values=("
-                          + event['values'] + ")")
-            return
-        event['value'] = int(value)
-        event['delta'] = int(delta)
+        if len(event['values']) != 2:
+            Llog.LogError("Invalid event values!")
+            return None
+
+        event['value'] = int(event['values'][0])
+        event['delta'] = int(event['values'][1])
 
 
 class VStatError(object):
@@ -132,16 +126,16 @@ class VStatError(object):
 class VStatEventDecoder():
 
     @staticmethod
-    def decode(vital_type, event):
-        if vital_type == "THRESHOLD":
+    def decode(event):
+        VStatEvent.decode(event)
+        if event['vital_type'] == "THRESHOLD":
             VStatThresholdEvent.decode(event)
             return
-
-        if vital_type == "ERROR":
+        if event['vital_type'] == "ERROR":
             VStatErrorEvent.decode(event)
             return
 
-        Llog.LogError("Invalid vital statistic type: " + str(vital_type))
+        Llog.LogError("Invalid vital statistic type: " + event['vital_type'])
         assert(False)
 
 
@@ -160,9 +154,8 @@ class VitalEventCollector():
 
     def event_rx_cback(self, event):
         assert(event['type'] == "VITAL")
-        vital_type, sep, msg = event['contents'].partition(":")
-        if vital_type in self.vital_types:
-            VStatEventDecoder.decode(vital_type, event)
+        VStatEventDecoder.decode(event)
+        if event['vital_type'] in self.vital_types:
             self.vital_rx_cback(event)
 
 
@@ -178,7 +171,6 @@ def test1():
                                     self.event_cback)
 
         def event_cback(self, event):
-            print "Event: " + str(event)
             assert(event['vital_type'] == "ERROR")
             self.events += 1
             self.value = event['value']
@@ -223,4 +215,5 @@ if __name__ == '__main__':
     print "initializing sys..."
     system.System.Init(username, appname, modulename)
 
+    Llog.SetLevel("I")
     test1()

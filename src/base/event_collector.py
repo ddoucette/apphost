@@ -1,7 +1,7 @@
 """
     EventCollector
 """
-import zsocket2
+import zsocket
 import zhelpers
 import interface
 import zmq
@@ -46,13 +46,15 @@ class EventCollector():
                  'timestamp': msg_list[2],
                  'user_name': msg_list[3],
                  'application_name': msg_list[4],
-                 'contents': msg[4:]}
+                 'contents': msg_list[5:]}
         return event
 
     def msg_cback(self, msg):
         event = EventCollector.event_msg_parse(msg)
         if event is None:
             Llog.LogError("Could not parse event message!: " + str(msg))
+            return
+        if event['type'] not in self.event_types:
             return
         self.event_cback(event)
 

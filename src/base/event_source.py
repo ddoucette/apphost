@@ -22,7 +22,7 @@
     connected to this server.
 
 """
-import zsocket2
+import zsocket
 import zhelpers
 import interface
 import zmq
