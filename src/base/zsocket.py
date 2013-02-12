@@ -30,7 +30,8 @@ import types
 import zhelpers
 import random
 import string
-
+import binascii
+import os
 from local_log import *
 
 
@@ -46,7 +47,8 @@ class ZSocket():
                     zmq.PUSH,
                     zmq.PULL,
                     zmq.REQ,
-                    zmq.REP]
+                    zmq.REP,
+                    zmq.PAIR]
 
     class Stats():
         def __init__(self):
@@ -54,6 +56,9 @@ class ZSocket():
             self.tx_ok = 0
             self.rx_err_short = 0
             self.rx_err_bad_header = 0
+            self.rx_err_bad_socket = 0
+            self.tx_err_bad_msg_fields = 0
+            self.tx_err_bad_socket = 0
 
     """
            
@@ -194,10 +199,19 @@ class ZSocket():
     def recv(self):
         assert(self.socket is not None)
 
-        if self.socket_type == zmq.ROUTER:
-            msg = self.__recv_multipart()
-        else:
-            msg = self.__recv()
+        try:
+            if self.socket_type == zmq.ROUTER:
+                msg = self.__recv_multipart()
+            else:
+                msg = self.__recv()
+        except KeyboardInterrupt:
+            Llog.LogDebug("Ctrl-c detected!")
+            raise KeyboardInterrupt
+        except:
+            Llog.LogError("Failed to send message!")
+            self.stats.rx_error_bad_socket += 1
+            return None
+
         Llog.LogDebug("Received: " + str(msg))
         return msg
 
@@ -222,12 +236,21 @@ class ZSocket():
         # Message format:
         # msg['address'] == address
         # msg['message'] = list of message pieces
-        msg_str = self.__construct_message(msg['message'])
+        try:
+            msg_str = self.__construct_message(msg['message'])
+        except:
+            Llog.LogError("Could not construct message!")
+            self.stats.tx_err_bad_msg_fields += 1
+            return
 
-        if self.socket_type == zmq.ROUTER:
-            self.__send_multipart(msg['address'], msg_str)
-        else:
-            self.__send(msg_str)
+        try:
+            if self.socket_type == zmq.ROUTER:
+                self.__send_multipart(msg['address'], msg_str)
+            else:
+                self.__send(msg_str)
+        except:
+            Llog.LogError("Could not send message!")
+            self.stats.tx_err_bad_socket += 1
 
 
 class ZSocketServer(ZSocket):
@@ -242,12 +265,10 @@ class ZSocketServer(ZSocket):
 
         if protocol_name == "tcp":
             assert(len(port_range) > 0 and len(port_range) <= 2)
-
-        for port in port_range:
-            assert(port > 0 and port < 65536)
-
-        if len(port_range) == 2:
-            assert(port_range[0] < port_range[1])
+            for port in port_range:
+                assert(port > 0 and port < 65536)
+            if len(port_range) == 2:
+                assert(port_range[0] < port_range[1])
 
         ZSocket.__init__(self, socket_type, signature)
 
@@ -329,6 +350,15 @@ class ZSocketClient(ZSocket):
         # to our protocol signature.
         if self.socket_type == zmq.SUB:
             self.subscribe(self.signature)
+
+
+def zpipe():
+    addr = "zpipe-%s" % binascii.hexlify(os.urandom(8))
+    c = ZSocketClient(zmq.PUSH, "ipc", addr, "zpipe")
+    s = ZSocketServer(zmq.PULL, "ipc", addr, "zpipe")
+    s.bind()
+    c.connect()
+    return [c,s]
 
 
 def test1():

@@ -54,11 +54,9 @@ def socket_set_hwm(socket, hwm=-1):
         socket.hwm = hwm
 
 def zpipe(ctx):
-    """build inproc pipe for talking to threads
-
-    mimic pipe used in czmq zthread_fork.
-
-    Returns a pair of PAIRs connected via inproc
+    """ Build inproc pipe for talking to threads.
+        Mimic pipe used in czmq zthread_fork.
+        Returns a pair of PAIRs connected via inproc.
     """
     a = ctx.socket(zmq.PAIR)
     a.linger = 0
@@ -88,12 +86,17 @@ def get_local_ipaddr():
     return addr
 
 def md5sum(file_name):
-    proc = subprocess.Popen(['md5sum', file_name],
-                                     stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE,
-                                     cwd=".",
-                                     env=None)
+    try:
+        proc = subprocess.Popen(['md5sum', file_name],
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE,
+                                        cwd=".",
+                                        env=None)
+    except:
+        return None
+
     out_str, err_str = proc.communicate()
+    proc.wait()
     if out_str != "":
         md5, sep, out_str = out_str.partition(" ")
         return md5
