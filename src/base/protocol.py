@@ -35,19 +35,26 @@ class Protocol(object):
         self.interface = interface.Interface(self.__msg_rx_process)
 
     def __msg_rx_process(self, msg):
-        if msg[0] not in self.pdesc:
-            Llog.LogError("Invalid message header: " + msg[0])
+        # We do some basic protocol checking, then forward the
+        # message to our interface pipe so the application
+        # can process this message in it's own context.
+        msg_list = msg['message']
+        msg_hdr = msg_list[0]
+        if msg_hdr not in self.pdesc:
+            Llog.LogError("Invalid message header: " + msg_hdr)
             self.stats.rx_err_bad_header += 1
 
-        m_min, m_max = self.pdesc[msg[0]]
+        m_min, m_max = self.pdesc[msg_hdr]
 
-        if len(msg) < m_min:
+        if len(msg_list) < m_min:
             Llog.LogError("Message too short!")
             self.stats.rx_err_short += 1
 
-        if len(msg) > m_max:
+        if len(msg_list) > m_max:
             Llog.LogError("Message too long!")
             self.stats.rx_err_long += 1
+
+        self.interface.push_out_msg(msg)
 
 
 def test1():

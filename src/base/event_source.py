@@ -50,8 +50,8 @@ class EventSocket(object):
         self.zsocket = zsocket.ZSocketServer(zmq.PUB,
                                              "tcp",
                                              "*",
-                                             self.port_range,
-                                             "EVENT")
+                                             "EVENT",
+                                             self.port_range)
         self.zsocket.bind()
         self.interface = interface.Interface()
         self.interface.add_socket(self.zsocket)

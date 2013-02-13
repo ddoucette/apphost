@@ -42,7 +42,7 @@ class Interface(object):
         # Our processing thread is most likely blocked on
         # the old list of sockets.  Now that we have a new one,
         # unblock the thread so it will begin processing this one.
-        self.__push_in_msg_raw(["PASS"])
+        self.__push_in_msg_raw({'message':["PASS"]})
 
     def find_socket_by_location(self, location):
         for socket in self.sockets:
@@ -58,7 +58,7 @@ class Interface(object):
                 self.poller.unregister(zskt.socket)
                 self.sockets.pop(index)
                 # Unblock the interface thread with a PASS message.
-                self.__push_in_msg_raw(["PASS"])
+                self.__push_in_msg_raw({'message':["PASS"]})
                 return
 
         Llog.LogError("Cannot find socket: <"
@@ -69,18 +69,7 @@ class Interface(object):
     def push_in_msg(self, msg):
         assert(isinstance(msg, types.DictType) is True)
         assert('message' in msg)
-
-        # We must ensure each message entry is string-ifyed
-        msglist = msg['message']
-        for i in range(len(msglist)):
-            msglist[i] = str(msglist[i])
-
-        if 'address' in msg:
-            address = msg['address']
-        else:
-            address = ""
-        cmd = ["MSG", address] + msg['message']
-        self.__push_in_msg_raw(cmd)
+        self.__push_in_msg_raw(msg)
 
     def close(self):
 
@@ -88,8 +77,7 @@ class Interface(object):
             return
 
         # Send the KILL command to the interface thread.
-        msg = ["KILL"]
-        self.__push_in_msg_raw(msg)
+        self.__push_in_msg_raw({'message':["KILL"]})
 
         # We have sent the KILL message, now wait for the thread
         # to complete
@@ -141,45 +129,35 @@ class Interface(object):
         self.protocol_rx_cback(msg)
 
     def __process_command_pipe(self):
-
         msg = self.in_pipe[1].recv()
-        assert(msg is not None)
-        assert(len(msg) >= 1)
+        if msg is None:
+            return
 
         # In the interface layer, there are only a few valid
         # message types:
         #  MSG - protocol message
         #  KILL - kill message
         #  PASS - do nothing.  Simply unblocks the processing thread.
-
-        if msg[0] == "PASS":
+        msg_list = msg['message']
+        if msg_list[0] == "PASS":
             # Null message meant to unblock the thread.
             return
-        elif msg[0] == "KILL":
+        elif msg_list[0] == "KILL":
             # We are finished.  Just get out of the thread.
             self.alive = False
             return
-        elif msg[0] == "MSG":
-
+        else:
             # Check to verify we have 1, and only 1 socket.
             # We support multiple sockets, so it gets a bit
             # difficult to decide which socket to send the message
             # to.
             assert(len(self.sockets) == 1)
-
-            # The message should be a list of strings, with the
-            # first entry being the address to send the message to.
-            assert(len(msg) >= 1)
-            address = msg[1]
-            msg_list = msg[2:]
-            self.sockets[0].send({'address':address, 'message':msg_list})
-        else:
-            Llog.LogError("Invalid message header! (" + msg[0] + ")")
-            assert(False)
+            self.sockets[0].send(msg)
 
     def __push_in_msg_raw(self, msg):
-        assert(isinstance(msg, types.ListType))
-        self.in_pipe[0].send({'message':msg})
+        assert(isinstance(msg, types.DictType) is True)
+        assert('message' in msg)
+        self.in_pipe[0].send(msg)
 
 
 def test1():
@@ -190,8 +168,8 @@ def test1():
             server = zsocket.ZSocketServer(zmq.ROUTER,
                                            "tcp",
                                            "*",
-                                           [port],
-                                           "MYPROTO")
+                                           "MYPROTO",
+                                           [port])
             server.bind()
             self.interface = Interface(self.handle_proto_req)
             self.interface.add_socket(server)
@@ -209,8 +187,8 @@ def test1():
             client = zsocket.ZSocketClient(zmq.REQ,
                                            "tcp",
                                            "127.0.0.1",
-                                           port,
-                                           "MYPROTO")
+                                           "MYPROTO",
+                                           port)
             client.connect()
             self.interface = Interface(self.handle_proto_msg)
             self.interface.add_socket(client)

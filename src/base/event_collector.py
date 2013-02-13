@@ -94,8 +94,8 @@ class EventCollector():
         zsock = zsocket.ZSocketClient(zmq.SUB,
                                       "tcp",
                                       addr_info['address'],
-                                      addr_info['port'],
-                                      "EVENT")
+                                      "EVENT",
+                                      addr_info['port'])
         assert(zsock is not None)
         zsock.connect()
         self.interface.add_socket(zsock)

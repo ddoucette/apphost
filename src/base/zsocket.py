@@ -13,7 +13,7 @@
 
     A ZSocket protocol frame looks like this:
 
-    signature:s1:s2:s3:s4:...:sXitem0item1 .. itemX
+    signature@address:s1:s2:s3:s4:...:sXitem0item1 .. itemX
 
     Following the signature are the indices for the start of each message field.
     This allows multiple fields without in-band escaping.
@@ -49,6 +49,10 @@ class ZSocket():
                     zmq.REQ,
                     zmq.REP,
                     zmq.PAIR]
+    # For inproc sockets, we must use the same context for
+    # all servers and clients.  We create a single global context
+    # for these.
+    inproc_ctx = None
 
     class Stats():
         def __init__(self):
@@ -67,14 +71,14 @@ class ZSocket():
                     removed from each sent and received PDU in order
                     to weed out errantly received messages.
     """
-    def __init__(self, socket_type, signature=None):
+    def __init__(self, socket_type, signature):
 
         assert(socket_type in self.socket_types)
-        if signature is not None:
-            assert(isinstance(signature, types.StringType))
-            # Make sure the signature does not have our delimiting
-            # character.
-
+        assert(isinstance(signature, types.StringType))
+        # Make sure the signature does not have our delimiting
+        # characters.
+        assert(":" not in signature)
+        assert("@" not in signature)
 
         self.stats = ZSocket.Stats()
         self.socket_type = socket_type
@@ -84,6 +88,9 @@ class ZSocket():
         self.zmq_ctx = zmq.Context(1)
         self.location = ""
         self.port = 0
+
+        if ZSocket.inproc_ctx is None:
+            ZSocket.inproc_ctx = zmq.Context(1)
 
     def __del__(self):
         self.close()
@@ -99,8 +106,21 @@ class ZSocket():
 
     def create_socket(self):
         assert(self.socket is None)
-        self.socket = self.zmq_ctx.socket(self.socket_type)
-        assert(self.socket is not None)
+
+        if self.protocol_name == "inproc":
+            # inproc sockets must be created from our global
+            # context.  They will not connect if they are created
+            # from different contexts.
+            self.socket = ZSocket.inproc_ctx.socket(self.socket_type)
+            self.socket.linger = 0
+            hwm = 0
+            try:
+                self.socket.sndhwm = self.socket.rcvhwm = hwm
+            except AttributeError:
+                self.socket.hwm = hwm
+        else:
+            self.socket = self.zmq_ctx.socket(self.socket_type)
+            assert(self.socket is not None)
 
     def subscribe(self, subscription):
         assert(self.socket is not None)
@@ -108,19 +128,25 @@ class ZSocket():
         Llog.LogDebug("Subscribing to <" + subscription + ">")
         self.socket.setsockopt(zmq.SUBSCRIBE, subscription)
 
-    def __parse_message(self, msg):
+    def __parse_message(self, msg_str):
         # Message format:
-        # signature:idx1:idx2:idxN+MSG
+        # signature@address:idx1:idx2:idxN+MSG
         # The + sign separates header from actual message.
         # The indices separate the parts of the message.
-        header, sep, msg = msg.partition('+')
+        header, sep, msg_str = msg_str.partition('+')
         if header == "":
             Llog.LogDebug("Invalid header received!")
             self.stats.rx_err_bad_header += 1
             return None
 
-        Llog.LogDebug("Received header: " + header + " : msg " + msg)
-        signature, sep, header = header.partition(':')
+        Llog.LogDebug("Received header: " + header + " : msg " + msg_str)
+        full_signature, sep, header = header.partition(':')
+        signature, sep, address = full_signature.partition("@")
+        if signature == "":
+            Llog.LogDebug("Invalid signature/address received!")
+            self.stats.rx_err_bad_header += 1
+            return None
+
         if signature != self.signature:
             Llog.LogDebug("Invalid signature received! (" + signature + ")")
             self.stats.rx_err_bad_header += 1
@@ -140,26 +166,43 @@ class ZSocket():
 
             msg_begin = last_msg_end
             msg_end = msg_begin + field_length
-            if msg_end > len(msg):
+            if msg_end > len(msg_str):
                 Llog.LogDebug("Invalid message index! (" + str(i) + ")")
                 self.stats.rx_err_bad_header += 1
                 return None
-            msg_list.append(msg[msg_begin:msg_end])
+            msg_list.append(msg_str[msg_begin:msg_end])
             last_msg_end = msg_end
             i += 1
 
         self.stats.rx_ok += 1
-        return msg_list
+        if address == "none":
+            # Dont bother with the 'none' address
+            msg = {'message':msg_list}
+        else:
+            msg = {'message':msg_list, 'address':address}
+        return msg
 
     def __construct_message(self, msg):
-        assert(isinstance(msg, types.ListType))
+        assert(isinstance(msg, types.DictType))
         msg_lengths = []
-        for msg_str in msg:
-            msg_lengths.append(str(len(msg_str)))
+        msg_list = msg['message']
+        if 'address' in msg:
+            address = msg['address']
+        else:
+            address = "none"
 
-        header = ":".join([self.signature] + msg_lengths)
+        full_signature = "@".join([self.signature, address])
+
+        for msg_str in msg_list:
+            msg_lengths.append(str(len(str(msg_str))))
+
+        header = ":".join([full_signature] + msg_lengths)
         header += ":"
-        msg_str = "".join(msg)
+        msg_str = ""
+
+        for msg_element in msg_list:
+            msg_str += str(msg_element)
+
         return "+".join([header, msg_str])
 
     def __recv(self):
@@ -167,34 +210,37 @@ class ZSocket():
 
         # For non-ROUTER sockets, just receive and process the
         # message
-        msg = self.socket.recv()
-        if msg is None:
+        msg_str = self.socket.recv()
+        if msg_str is None:
             return None
 
-        msg_list = self.__parse_message(msg)
-        if msg_list is None:
-            return None
-        return {'address': "", 'message':msg_list}
+        return self.__parse_message(msg_str)
 
     def __recv_multipart(self):
         assert(self.socket is not None)
         assert(self.socket_type == zmq.ROUTER)
 
-        msg = self.socket.recv_multipart()
-        if msg is None:
+        msg_list = self.socket.recv_multipart()
+        if msg_list is None:
             return None
 
         # Router messages received are always the following
         # format:
         # ['address', '', 'contents']
-        if len(msg) != 3:
-            Llog.LogInfo("Invalid message received! " + str(msg))
+        if len(msg_list) != 3:
+            Llog.LogInfo("Invalid message received! " + str(msg_list))
             self.stats.rx_err_short += 1
             return None
 
-        address = msg[0]
-        msg_list = self.__parse_message(msg[2])
-        return {'address': address, 'message':msg_list}
+        address = msg_list[0]
+        msg_str = msg_list[2]
+        msg = self.__parse_message(msg_str)
+        if msg is not None:
+            # For ROUTER sockets, the address is sent OOB within ZMQ
+            # framing.  We overwrite the 'none' address field with the
+            # actual address.
+            msg['address'] = address
+        return msg
 
     def recv(self):
         assert(self.socket is not None)
@@ -208,8 +254,8 @@ class ZSocket():
             Llog.LogDebug("Ctrl-c detected!")
             raise KeyboardInterrupt
         except:
-            Llog.LogError("Failed to send message!")
-            self.stats.rx_error_bad_socket += 1
+            Llog.LogError("Failed to receive message!")
+            self.stats.rx_err_bad_socket += 1
             return None
 
         Llog.LogDebug("Received: " + str(msg))
@@ -236,12 +282,13 @@ class ZSocket():
         # Message format:
         # msg['address'] == address
         # msg['message'] = list of message pieces
-        try:
-            msg_str = self.__construct_message(msg['message'])
-        except:
-            Llog.LogError("Could not construct message!")
-            self.stats.tx_err_bad_msg_fields += 1
-            return
+        msg_str = self.__construct_message(msg)
+        #try:
+        #    msg_str = self.__construct_message(msg)
+        #except:
+        #    Llog.LogError("Could not construct message!")
+        #    self.stats.tx_err_bad_msg_fields += 1
+        #    return
 
         try:
             if self.socket_type == zmq.ROUTER:
@@ -258,10 +305,10 @@ class ZSocketServer(ZSocket):
     def __init__(self, socket_type,
                        protocol_name,
                        bind_address,
-                       port_range=[],
-                       signature=""):
+                       signature,
+                       port_range=[]):
         assert(bind_address != "")
-        assert(protocol_name in ["tcp", "ipc"])
+        assert(protocol_name in ["tcp", "ipc", "inproc"])
 
         if protocol_name == "tcp":
             assert(len(port_range) > 0 and len(port_range) <= 2)
@@ -306,14 +353,15 @@ class ZSocketServer(ZSocket):
         self.location = self.protocol_name \
                             + "://" + self.bind_address
         self.socket.bind(self.location)
-        Llog.LogDebug("bound to IPC channel (" + self.location + ")")
+        Llog.LogDebug("bound to " + self.location)
 
     def bind(self):
         self.create_socket()
 
         if self.protocol_name == "tcp":
             self.__bind_tcp()
-        elif self.protocol_name == "ipc":
+        elif self.protocol_name == "ipc" or \
+             self.protocol_name == "inproc":
             self.__bind_ipc()
         else:
             assert(False)
@@ -324,10 +372,10 @@ class ZSocketClient(ZSocket):
     def __init__(self, socket_type,
                        protocol_name,
                        address,
-                       port=0,
-                       signature=""):
+                       signature,
+                       port=0):
         assert(address != "")
-        assert(protocol_name in ["tcp", "ipc"])
+        assert(protocol_name in ["tcp", "ipc", "inproc"])
 
         if protocol_name == "tcp":
             assert(port > 0 and port < 65536)
@@ -354,8 +402,8 @@ class ZSocketClient(ZSocket):
 
 def zpipe():
     addr = "zpipe-%s" % binascii.hexlify(os.urandom(8))
-    c = ZSocketClient(zmq.PUSH, "ipc", addr, "zpipe")
-    s = ZSocketServer(zmq.PULL, "ipc", addr, "zpipe")
+    c = ZSocketClient(zmq.PAIR, "inproc", addr, "zpipe")
+    s = ZSocketServer(zmq.PAIR, "inproc", addr, "zpipe")
     s.bind()
     c.connect()
     return [c,s]
@@ -363,8 +411,8 @@ def zpipe():
 
 def test1():
 
-    c = ZSocketClient(zmq.REQ, "tcp", "127.0.0.1", 4321, "mysig")
-    s = ZSocketServer(zmq.REP, "tcp", "*", [4321, 4323], "mysig")
+    c = ZSocketClient(zmq.REQ, "tcp", "127.0.0.1", "mysig", 4321)
+    s = ZSocketServer(zmq.REP, "tcp", "*", "mysig", [4321, 4323])
 
     assert(c is not None)
     assert(s is not None)
@@ -407,13 +455,13 @@ def test2():
     clist = []
     nr_clients = 100
 
-    s = ZSocketServer(zmq.ROUTER, "tcp", "*", [4321, 4323], "MYPROTO")
+    s = ZSocketServer(zmq.ROUTER, "tcp", "*", "MYPROTO", [4321, 4323])
     assert(s is not None)
     s.bind()
 
     i = 0
     while i < nr_clients:
-        c = ZSocketClient(zmq.REQ, "tcp", "127.0.0.1", 4321, "MYPROTO")
+        c = ZSocketClient(zmq.REQ, "tcp", "127.0.0.1", "MYPROTO", 4321)
         assert(c is not None)
         clist.append(c)
         c.connect()
@@ -447,8 +495,8 @@ def test2():
 def test3():
 
     # Verify the server bind range mechanism works
-    s1 = ZSocketServer(zmq.REP, "tcp", "*", [4321])
-    s = ZSocketServer(zmq.REP, "tcp", "*", [4321, 4323])
+    s1 = ZSocketServer(zmq.REP, "tcp", "*", "test3", [4321])
+    s = ZSocketServer(zmq.REP, "tcp", "*", "test3", [4321, 4323])
 
     assert(s1 is not None)
     assert(s is not None)
@@ -458,7 +506,7 @@ def test3():
     # Because server s1 above already bound to port 4321, server 's'
     # should be bound to port 4322.
 
-    c = ZSocketClient(zmq.REQ, "tcp", "127.0.0.1", 4322)
+    c = ZSocketClient(zmq.REQ, "tcp", "127.0.0.1", "test3", 4322)
     assert(c is not None)
 
     c.connect()
@@ -477,12 +525,12 @@ def test3():
 def test4():
 
     # Verify push/pull sockets work
-    spush = ZSocketServer(zmq.PUSH, "tcp", "*", [4567,4569])
+    spush = ZSocketServer(zmq.PUSH, "tcp", "*", "test4", [4567,4569])
 
     assert(spush is not None)
     spush.bind()
 
-    cpull = ZSocketClient(zmq.PULL, "tcp", "127.0.0.1", 4567)
+    cpull = ZSocketClient(zmq.PULL, "tcp", "127.0.0.1", "test4", 4567)
     assert(cpull is not None)
 
     cpull.connect()
@@ -497,12 +545,12 @@ def test4():
     spush.close()
 
     # And now verify the PULL side can be the server...
-    spull = ZSocketServer(zmq.PULL, "tcp", "*", [4567,4569])
+    spull = ZSocketServer(zmq.PULL, "tcp", "*", "test4", [4567,4569])
 
     assert(spull is not None)
     spull.bind()
 
-    cpush = ZSocketClient(zmq.PUSH, "tcp", "127.0.0.1", 4567)
+    cpush = ZSocketClient(zmq.PUSH, "tcp", "127.0.0.1", "test4", 4567)
     assert(cpush is not None)
 
     cpush.connect()
@@ -521,12 +569,12 @@ def test4():
 def test5():
 
     # Verify IPC communications
-    spush = ZSocketServer(zmq.PUSH, "ipc", "test5-push.ipc")
+    spush = ZSocketServer(zmq.PUSH, "ipc", "test5-push.ipc", "test5")
 
     assert(spush is not None)
     spush.bind()
 
-    cpull = ZSocketClient(zmq.PULL, "ipc", "test5-push.ipc")
+    cpull = ZSocketClient(zmq.PULL, "ipc", "test5-push.ipc", "test5")
     assert(cpull is not None)
 
     cpull.connect()
@@ -541,12 +589,12 @@ def test5():
     spush.close()
 
     # Now verify the PULL socket can act like a server... 
-    spull = ZSocketServer(zmq.PULL, "ipc", "test5-pull.ipc")
+    spull = ZSocketServer(zmq.PULL, "ipc", "test5-pull.ipc", "test5")
 
     assert(spull is not None)
     spull.bind()
 
-    cpush = ZSocketClient(zmq.PUSH, "ipc", "test5-pull.ipc")
+    cpush = ZSocketClient(zmq.PUSH, "ipc", "test5-pull.ipc", "test5")
     assert(cpush is not None)
 
     cpush.connect()
@@ -565,12 +613,12 @@ def test5():
 def test6():
 
     # Binary file chunking...
-    spush = ZSocketServer(zmq.PUSH, "ipc", "test5-push.ipc")
+    spush = ZSocketServer(zmq.PUSH, "ipc", "test5-push.ipc", "test6")
 
     assert(spush is not None)
     spush.bind()
 
-    cpull = ZSocketClient(zmq.PULL, "ipc", "test5-push.ipc")
+    cpull = ZSocketClient(zmq.PULL, "ipc", "test5-push.ipc", "test6")
     assert(cpull is not None)
     cpull.connect()
 
@@ -608,6 +656,49 @@ def test6():
     print "test6() - PASSED"
 
 
+def test7():
+
+    # Binary file chunking.. using a zpipe.
+    pipes = zpipe()
+    spush = pipes[0]
+    cpull = pipes[1]
+
+    Llog.SetLevel("I")
+
+    nr_chunks = 0
+    chunksize = 1000
+    with open("testfile.bin", "rb") as f:
+        while True:
+            chunk = f.read(chunksize)
+            if chunk:
+                spush.send({'message':["CHUNK", str(nr_chunks), chunk]})
+                nr_chunks += 1
+            else:
+                break
+        f.close()
+
+    i = 0
+    with open("testfile-recv.bin", "w+") as f:
+        while True:
+            msg = cpull.recv()['message']
+            assert(msg[0] == "CHUNK")
+            f.write(msg[2])
+            i += 1
+            if i == nr_chunks:
+                break
+        f.close()
+
+    cpull.close()
+    spush.close()
+
+    # Run md5sum on both files to ensure they are identical
+    tx_md5 = zhelpers.md5sum("testfile.bin")
+    rx_md5 = zhelpers.md5sum("testfile-recv.bin")
+    assert(tx_md5 == rx_md5 and rx_md5 is not None)
+
+    print "test7() - PASSED"
+
+
 if __name__ == '__main__':
     test1()
     test2()
@@ -615,3 +706,4 @@ if __name__ == '__main__':
     test4()
     test5()
     test6()
+    test7()

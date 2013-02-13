@@ -60,6 +60,7 @@ class VStatEvent(object):
         self.vstat_type = vstat_type
 
     def send(self, values):
+        assert(isinstance(values, types.ListType))
         msg = [self.vstat_type,
                self.description] + values
         self.event.send(msg)
