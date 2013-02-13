@@ -17,15 +17,17 @@ class Interface(object):
 
     """
     """
-    def __init__(self, protocol_rx_cback=None):
+    def __init__(self, rx_filter=None, rx_cback=None):
 
         self.ctx = zmq.Context.instance()
         self.in_pipe = zsocket.zpipe()
         self.poller = zmq.Poller()
         self.poller.register(self.in_pipe[1].socket, zmq.POLLIN)
+        self.poller.register(self.in_pipe[0].socket, zmq.POLLIN)
         self.alive = True
         self.sockets = []
-        self.protocol_rx_cback = protocol_rx_cback
+        self.protocol_rx_cback = rx_cback
+        self.rx_filter = rx_filter
 
         self.thread = threading.Thread(target=self.__thread_entry)
         self.thread.daemon = True
@@ -78,7 +80,6 @@ class Interface(object):
         self.in_pipe[1].send(msg)
 
     def close(self):
-
         if self.in_pipe is None:
             return
 
@@ -117,7 +118,9 @@ class Interface(object):
                 items = {}
 
             if self.in_pipe[1].socket in items:
-                self.__process_command_pipe()
+                self.__process_inbound_msgs()
+            elif self.in_pipe[0].socket in items:
+                self.__process_outbound_msgs()
             else:
                 # Check to see if any of our sockets are now readable
                 for zskt in self.sockets:
@@ -130,11 +133,23 @@ class Interface(object):
             return
         assert('message' in msg)
 
-        if self.protocol_rx_cback is None:
-            return
-        self.protocol_rx_cback(msg)
+        if self.rx_filter is not None:
+            msg = self.rx_filter(msg)
 
-    def __process_command_pipe(self):
+        if msg is not None:
+            # The message has not been filtered, push it up
+            # to the protocol
+            self.in_pipe[1].send(msg)
+
+    def __process_outbound_msgs(self):
+        msg = self.in_pipe[0].recv()
+        if msg is None:
+            return
+
+        if self.protocol_rx_cback is not None:
+            self.protocol_rx_cback(msg)
+
+    def __process_inbound_msgs(self):
         msg = self.in_pipe[1].recv()
         if msg is None:
             return
@@ -177,7 +192,7 @@ def test1():
                                            "MYPROTO",
                                            [port])
             server.bind()
-            self.interface = Interface(self.handle_proto_req)
+            self.interface = Interface(rx_cback=self.handle_proto_req)
             self.interface.add_socket(server)
 
         def handle_proto_req(self, msg):
