@@ -44,7 +44,7 @@ class Interface(object):
         # Our processing thread is most likely blocked on
         # the old list of sockets.  Now that we have a new one,
         # unblock the thread so it will begin processing this one.
-        self.__push_in_msg_raw({'message':["PASS"]})
+        self.__push_in_msg_raw({'message':["INTF_PASS"]})
 
     def find_socket_by_location(self, location):
         for socket in self.sockets:
@@ -60,7 +60,7 @@ class Interface(object):
                 self.poller.unregister(zskt.socket)
                 self.sockets.pop(index)
                 # Unblock the interface thread with a PASS message.
-                self.__push_in_msg_raw({'message':["PASS"]})
+                self.__push_in_msg_raw({'message':["INTF_PASS"]})
                 return
 
         Llog.LogError("Cannot find socket: <"
@@ -84,7 +84,7 @@ class Interface(object):
             return
 
         # Send the KILL command to the interface thread.
-        self.__push_in_msg_raw({'message':["KILL"]})
+        self.__push_in_msg_raw({'message':["INTF_KILL"]})
 
         # We have sent the KILL message, now wait for the thread
         # to complete
@@ -160,10 +160,10 @@ class Interface(object):
         #  KILL - kill message
         #  PASS - do nothing.  Simply unblocks the processing thread.
         msg_list = msg['message']
-        if msg_list[0] == "PASS":
+        if msg_list[0] == "INTF_PASS":
             # Null message meant to unblock the thread.
             return
-        elif msg_list[0] == "KILL":
+        elif msg_list[0] == "INTF_KILL":
             # We are finished.  Just get out of the thread.
             self.alive = False
             return
