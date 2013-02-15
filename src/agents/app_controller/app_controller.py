@@ -210,6 +210,7 @@ class AppControlProtocolClient(object):
         For a description of the protocol, see AppControlProtocolServer
         above.
     """
+    states = ["INIT", "LOADING", "CHUNKING", "LOADED", "RUNNING"]
     def __init__(self, address, port):
         location_descriptor = {'name':"appctl",
                                'type':zmq.REQ,
@@ -230,5 +231,117 @@ class AppControlProtocolClient(object):
         self.f = None
         self.alive = True
 
+    def hello(self):
+        # Send hello message to the server
+        self.proto.send({'message':["HELLO"]})
+
+    def load(self, filename):
+        if self.state != "INIT":
+            Llog.LogError("Cannot load file: "
+                           + filename + " in state " + self.state)
+            return
+
+        md5sum = zhelpers.md5sum(filename)
+        if md5sum is None:
+            Llog.LogError("Cannot find file: " + filename)
+            return
+
+        # Send a LOAD message to the server for this file.  The
+        # server may already have a copy.
+        self.filename = filename
+        self.md5sum = md5sum
+        self.state = "LOADING"
+        self.proto.send({'message':["LOAD", filename, md5sum]})
+
+    def run(self, command):
+        if self.state != "LOADED":
+            Llog.LogError("Cannot run application: "
+                           + self.filename + " in state " + self.state)
+            return
+        self.proto.send({'message':["RUN", command]})
+
+    def stop(self):
+        if self.state != "LOADED" and self.state != "RUNNING":
+            Llog.LogError("Cannot stop application: "
+                           + self.filename + " in state " + self.state)
+            return
+        self.proto.send({'message':["STOP"]})
+
+    def quit(self):
+        self.proto.send({'message':["QUIT"]})
+
     def do_hello(self, msg):
+        # Callback for a hello message
+        msg_list = msg['message']
+        if msg_list[1] == "ready":
+            # The server is ready to receive our application file
+            pass
+        elif msg_list[1] == "loaded":
+            self.filename = msg_list[2]
+            self.md5sum = msg_list[3]
+            self.state = "LOADED"
+        elif msg_list[1] == "running":
+            self.filename = msg_list[2]
+            self.md5sum = msg_list[3]
+            self.state = "RUNNING"
+        else:
+            Llog.LogError("Invalid server state: "
+                          + msg_list[1] + " received in HELLO message!")
+            self.state = "ERROR"
+
+    def do_load(self, msg):
+        if self.state != "LOADING":
+            Llog.LogError("Received LOAD message in state: " + self.state)
+            return
+
+        msg_list = msg['message']
+        if msg_list[1] == self.filename:
+            # The file is present on the server.
+            if msg_list[2] != self.md5sum:
+                Llog.LogError("Server file ("
+                              + self.filename
+                              + ") has an invalid md5sum: "
+                              + msg_list[2]
+                              + " The md5sum should be: "
+                              + self.md5sum)
+                self.state = "ERROR"
+                return
+            self.state = "LOADED"
+            return
+
+        # The server does not have our file present.  Lets begin to
+        # chunk-copy the file over
+        assert(self.f is None)
+
+        self.chunks_outstanding = 0
+
+        try:
+            self.f = open(filename, "rb")
+        except:
+            Llog.LogError("Cannot open " + filename + " for reading!")
+
+        self.__send_file_chunks()
+
+    def do_hello(self, msg):
+        pass
+
+    def __send_file_chunks(self):
+        while self.chunks_outstanding < self.max_chunks_outstanding:
+            chunk = self.f.read(self.chunksize)
+            if chunk != "":
+                # We have a chunk of data.  Check to see if it is
+                # the last chunk of data.  We do this by reading the next
+                # byte in the file.  If it is empty, we know we are at
+                # the end of the file.
+                last_chunk = "false"
+                byte = self.f.read(1)
+                if byte == "":
+                    # Done.  Flag the last chunk
+                    last_chunk = "true"
+                else:
+                    # There is still more data to read.  Put the
+                    # file back to where it was.
+                    self.f.seek(-1,1)
+                self.proto.send({'message':["CHUNK", last_chunk, chunk]})
+                self.chunks_outstanding += 1
 
