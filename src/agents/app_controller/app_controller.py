@@ -32,7 +32,7 @@ class AppControlProtocolServer(object):
          client --->  CHUNK <size,is_last>  ---> server
          client --->  CHUNK <size,is_last>  ---> server
          client --->  CHUNK <size,is_last=true>  ---> server
-         client <---  CHUNK <ok,md5> <--- server
+         client <---  CHUNK <done,md5> <--- server
              All bytes have been received.  The server now 
              acknowledges the presense of the original file.
          client --->  LOAD <filename,md5> ---> server
@@ -78,6 +78,7 @@ class AppControlProtocolServer(object):
         self.alive = True
 
     def do_hello(self, msg):
+        msg_list = msg['message']
         if self.state == "INIT":
             msg_list = ["HELLO", "ready"]
         elif self.state == "LOADED":
@@ -113,9 +114,8 @@ class AppControlProtocolServer(object):
         self.proto.send(msg)
 
     def do_chunk(self, msg):
-        size = msg['message'][1]
-        is_last = msg['message'][2]
-        data_block = msg['message'][3]
+        is_last = msg['message'][1]
+        data_block = msg['message'][2]
 
         if self.state == "INIT":
             self.__reset()
@@ -312,15 +312,35 @@ class AppControlProtocolClient(object):
         # The server does not have our file present.  Lets begin to
         # chunk-copy the file over
         assert(self.f is None)
-
-        self.chunks_outstanding = 0
-
         try:
             self.f = open(filename, "rb")
         except:
             Llog.LogError("Cannot open " + filename + " for reading!")
-
+        self.chunks_outstanding = 0
+        self.state = "CHUNKING"
         self.__send_file_chunks()
+
+    def do_chunk(self, msg):
+        if self.state != "CHUNKING":
+            Llog.LogError("Received CHUNK message in state: " + self.state)
+            return
+
+        msg_list = msg['message']
+        if msg_list[1] == "ok":
+            # Received ACK for a chunk.  Send more chunks...
+            self.chunks_outstanding -= 1
+            self.__send_file_chunks()
+        elif msg_list[1] == "done":
+            if len(msg_list)
+            md5sum = msg_list[2]
+            if md5sum != self.md5sum:
+                Llog.LogError("Received bad MD5 from completed file copy!")
+                self.state = "INIT"
+                return
+            self.state = "LOADED"
+        else:
+            Llog.LogError("Received invalid CHUNK message: " + msg_list[1])
+            self.state = "ERROR"
 
     def do_hello(self, msg):
         pass
@@ -344,4 +364,8 @@ class AppControlProtocolClient(object):
                     self.f.seek(-1,1)
                 self.proto.send({'message':["CHUNK", last_chunk, chunk]})
                 self.chunks_outstanding += 1
+            else:
+                # Strange, we have run out of data to read.  This should
+                # have been detected above.
+                Llog.Bug("Empty chunk read!")
 

@@ -75,6 +75,13 @@ class Llog():
             Llog.log_inst = Llog()
         Llog.log_inst.level = level
 
+    @staticmethod
+    def Bug(msg=""):
+        if Llog.log_inst is None:
+            Llog.log_inst = Llog()
+        Llog.log_inst.log_msg("E", "A", "BUG!!! " + msg)
+        assert(False)
+
 
 def test1():
     Llog.LogError("My error!")
