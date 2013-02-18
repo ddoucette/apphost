@@ -105,20 +105,18 @@ class ProtocolClient(Protocol):
                                              location_desc['address'],
                                              location_desc['name'],
                                              location_desc['port'])
+        self.location_descriptor = location_desc
         self.zsocket.connect()
         self.interface.add_socket(self.zsocket)
-        self.address_override = ""
-        if location_desc['type'] == zmq.ROUTER:
-            # The client is using a ROUTER socket.  We need to provide
-            # an override address, so each message sent will have
-            # an address attached.
-            self.zsocket.set_identity(location_desc['name'])
-            self.address_override = location_desc['name']
 
     @overrides(Protocol)
     def send(self, msg):
-        if self.address_override != "":
-            msg['address'] = self.address_override
+        if self.zsocket.socket_type == zmq.ROUTER:
+            # The client is using a ROUTER socket.  The client
+            # ROUTER socket must provide an address when sending
+            # all messages.  By default, the protocol server address
+            # will be set to the protocol name.
+            msg['address'] = self.location_descriptor['name']
         Protocol.send(self, msg)
 
 
