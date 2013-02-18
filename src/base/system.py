@@ -13,17 +13,17 @@ class System():
 
     @staticmethod
     def GetUserName():
-        assert(System.__user_name != "")
+        # assert(System.__user_name != "")
         return System.__user_name
 
     @staticmethod
     def GetApplicationName():
-        assert(System.__application_name != "")
+        # assert(System.__application_name != "")
         return System.__application_name
 
     @staticmethod
     def GetModuleName():
-        assert(System.__module_name != "")
+        # assert(System.__module_name != "")
         return System.__module_name
 
     @staticmethod

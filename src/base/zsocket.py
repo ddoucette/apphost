@@ -122,11 +122,19 @@ class ZSocket():
             self.socket = self.zmq_ctx.socket(self.socket_type)
             assert(self.socket is not None)
 
+        if self.socket_type == zmq.ROUTER:
+            self.set_identity(self.signature)
+
     def subscribe(self, subscription):
         assert(self.socket is not None)
         assert(self.socket_type is zmq.SUB)
         Llog.LogDebug("Subscribing to <" + subscription + ">")
         self.socket.setsockopt(zmq.SUBSCRIBE, subscription)
+
+    def set_identity(self, identity):
+        assert(self.socket is not None)
+        Llog.LogDebug("Setting identity to <" + str(identity) + ">")
+        self.socket.setsockopt(zmq.IDENTITY, identity)
 
     def __parse_message(self, msg_str):
         # Message format:
@@ -296,7 +304,7 @@ class ZSocket():
             else:
                 self.__send(msg_str)
         except:
-            Llog.LogError("Could not send message!")
+            Llog.LogError("Could not send message! (" + msg_str + ")")
             self.stats.tx_err_bad_socket += 1
 
 

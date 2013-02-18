@@ -3,8 +3,10 @@ import projpath
 import system
 import vitals
 import protocol
+import zmq
 import zhelpers
 from local_log import *
+from override import *
 
 
 class AppControlProtocolServer(object):
@@ -69,7 +71,8 @@ class AppControlProtocolServer(object):
                                'RUN':(2,2,self.do_run),
                                'STOP':(1,1,self.do_stop),
                                'DONE':(1,1,self.do_done)}
-        self.proto = ProtocolServer(location_descriptor,
+        self.proto = protocol.ProtocolServer(
+                                    location_descriptor,
                                     protocol_descriptor)
         self.state = "INIT"
         self.filename = ""
@@ -93,7 +96,7 @@ class AppControlProtocolServer(object):
             msg_list = ["HELLO", "ready"]
         else:
             assert(False)
-
+        Llog.LogInfo("Received hello!")
         msg['message'] = msg_list
         self.proto.send(msg)
 
@@ -191,6 +194,14 @@ class AppControlProtocolServer(object):
         except:
             Llog.LogError("Cannot open " + self.filename + " for writting!")
 
+    def __reset(self):
+        if self.f is not None:
+            self.f.close()
+            self.f = None
+        self.state = "INIT"
+        self.filename = ""
+        self.md5sum = ""
+
     def __write_file(self, data_block):
         assert(self.f is not None)
         f.write(data_block)
@@ -211,9 +222,12 @@ class AppControlProtocolClient(object):
         above.
     """
     states = ["INIT", "LOADING", "CHUNKING", "LOADED", "RUNNING"]
+    max_chunks_outstanding = 5
+    chunksize = 1000
+
     def __init__(self, address, port):
         location_descriptor = {'name':"appctl",
-                               'type':zmq.REQ,
+                               'type':zmq.ROUTER,
                                'protocol':"tcp",
                                'address':address,
                                'port':port}
@@ -223,16 +237,20 @@ class AppControlProtocolClient(object):
                                'RUNNING':(1,1,self.do_running),
                                'STOPPED':(1,1,self.do_stopped),
                                'FINISHED':(1,1,self.do_finished)}
-        self.proto = ProtocolClient(location_descriptor,
+        self.proto = protocol.ProtocolClient(
+                                    location_descriptor,
                                     protocol_descriptor)
         self.state = "INIT"
         self.filename = ""
         self.md5sum = ""
         self.f = None
         self.alive = True
+        self.chunks_outstanding = 0
+        self.hello()
 
     def hello(self):
         # Send hello message to the server
+        Llog.LogInfo("Sending a HELLO")
         self.proto.send({'message':["HELLO"]})
 
     def load(self, filename):
@@ -288,6 +306,7 @@ class AppControlProtocolClient(object):
             Llog.LogError("Invalid server state: "
                           + msg_list[1] + " received in HELLO message!")
             self.state = "ERROR"
+        Llog.LogInfo("Received hello response! " + msg_list[1])
 
     def do_load(self, msg):
         if self.state != "LOADING":
@@ -313,9 +332,10 @@ class AppControlProtocolClient(object):
         # chunk-copy the file over
         assert(self.f is None)
         try:
-            self.f = open(filename, "rb")
+            self.f = open(self.filename, "rb")
+            assert(self.f is not None)
         except:
-            Llog.LogError("Cannot open " + filename + " for reading!")
+            Llog.LogError("Cannot open " + self.filename + " for reading!")
         self.chunks_outstanding = 0
         self.state = "CHUNKING"
         self.__send_file_chunks()
@@ -331,7 +351,10 @@ class AppControlProtocolClient(object):
             self.chunks_outstanding -= 1
             self.__send_file_chunks()
         elif msg_list[1] == "done":
-            if len(msg_list)
+            if len(msg_list) != 3:
+                Llog.LogError("Received bad 'done' message!")
+                self.state = "INIT"
+                return
             md5sum = msg_list[2]
             if md5sum != self.md5sum:
                 Llog.LogError("Received bad MD5 from completed file copy!")
@@ -342,10 +365,27 @@ class AppControlProtocolClient(object):
             Llog.LogError("Received invalid CHUNK message: " + msg_list[1])
             self.state = "ERROR"
 
-    def do_hello(self, msg):
-        pass
+    def do_running(self, msg):
+        if self.state != "LOADED":
+            Llog.LogError("Received RUNNING message in state: " + self.state)
+            return
+        self.state = "RUNNING"
+
+    def do_stopped(self, msg):
+        if self.state != "RUNNING":
+            Llog.LogError("Received STOPPED message in state: " + self.state)
+            return
+        self.state = "LOADED"
+
+    def do_finished(self, msg):
+        if self.state != "RUNNING":
+            Llog.LogError("Received FINISHED message in state: " + self.state)
+            return
+        self.return_code = msg['message'][1]
+        self.state = "LOADED"
 
     def __send_file_chunks(self):
+        assert(self.f is not None)
         while self.chunks_outstanding < self.max_chunks_outstanding:
             chunk = self.f.read(self.chunksize)
             if chunk != "":
@@ -369,3 +409,19 @@ class AppControlProtocolClient(object):
                 # have been detected above.
                 Llog.Bug("Empty chunk read!")
 
+
+def test1():
+
+    Llog.SetLevel("I")
+    s = AppControlProtocolServer()
+    c = AppControlProtocolClient("127.0.0.1", 8100)
+
+    time.sleep(1)
+    assert(c.state == "INIT")
+    c.load("testfile.bin")
+    time.sleep(5)
+    assert(c.state == "LOADED")
+
+
+if __name__ == '__main__':
+    test1()

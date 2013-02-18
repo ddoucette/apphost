@@ -25,6 +25,7 @@ class Interface(object):
         self.poller.register(self.in_pipe[1].socket, zmq.POLLIN)
         self.poller.register(self.in_pipe[0].socket, zmq.POLLIN)
         self.alive = True
+        self.closed = False
         self.sockets = []
         self.protocol_rx_cback = rx_cback
         self.rx_filter = rx_filter
@@ -32,6 +33,12 @@ class Interface(object):
         self.thread = threading.Thread(target=self.__thread_entry)
         self.thread.daemon = True
         self.thread.start()
+
+    def __del__(self):
+        # Ensure the caller closed this interface
+        if self.closed is not True:
+            Llog.LogError("Interface not closed properly!")
+            assert(False)
 
     def add_socket(self, zskt):
         assert(zskt is not None)
@@ -61,6 +68,7 @@ class Interface(object):
                 self.sockets.pop(index)
                 # Unblock the interface thread with a PASS message.
                 self.__push_in_msg_raw({'message':["INTF_PASS"]})
+                socket.close()
                 return
 
         Llog.LogError("Cannot find socket: <"
@@ -80,8 +88,9 @@ class Interface(object):
         self.in_pipe[1].send(msg)
 
     def close(self):
-        if self.in_pipe is None:
-            return
+        self.closed = True
+        for zsocket in self.sockets[:]:
+            self.remove_socket(zsocket)
 
         # Send the KILL command to the interface thread.
         self.__push_in_msg_raw({'message':["INTF_KILL"]})
@@ -96,6 +105,11 @@ class Interface(object):
                 print "ERROR: Interface has not cleaned up!  Exiting anyway!"
                 break
             iterations -= 1
+
+        if self.in_pipe is not None:
+            self.in_pipe[0].close()
+            self.in_pipe[1].close()
+        self.ctx.destroy()
 
     def __thread_entry(self):
         # This is the one and only interface processing thread.
@@ -230,6 +244,9 @@ def test1():
     c.do_something()
     time.sleep(2)
     assert(c.done is True)
+
+    s.interface.close()
+    c.interface.close()
     print "PASSED"
 
 

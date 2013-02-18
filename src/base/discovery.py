@@ -49,8 +49,8 @@ class DiscoveryServer:
         self.thread.daemon = True
         self.thread.start()
 
-    def __del__(self):
-        self.close()
+    #def __del__(self):
+        # self.close()
 
     def close(self):
         if self.alive is True:
