@@ -8,11 +8,11 @@ import time
 import zmq
 import types
 import zsocket
-from local_log import *
+import log 
 from override import *
 
 
-class Protocol(object):
+class Protocol(log.Logger):
 
     """
     """
@@ -24,42 +24,57 @@ class Protocol(object):
 
     def __init__(self, name, location, messages, states):
         assert(isinstance(location, types.DictType))
-        assert(isinstance(messages, types.DictType))
-        assert(isinstance(states, types.DictType))
+        assert(isinstance(messages, types.ListType))
+        assert(isinstance(states, types.ListType))
+
+        log.Logger.__init__(self)
+        self.log_level = "D"
 
         self.stats = Protocol.Stats()
         self.location = location
         self.messages = messages
         self.states = states
         self.name = name
-        self.__set_state(states[0]['name'])
+        self.current_state = states[0]
         self.interface = interface.Interface(self.__rx_msg, None)
 
-        Llog.LogInfo("Created protocol (" + name + ") "
-                     + len(messages) + " messages, "
-                     + len(states) + " states.")
+        self.log_info("Created protocol (" + name + ") "
+                     + str(len(messages)) + " messages, "
+                     + str(len(states)) + " states.")
+
+    def get_state(self):
+        return self.current_state['name']
 
     def __set_state(self, state_name):
         # Find the state name within our list of valid states
         for state in self.states:
             if state['name'] == state_name:
+                self.log_debug("state: " + self.current_state['name']
+                              + " ==> " + state['name'])
                 self.current_state = state
                 return
-        Llog.Bug("Cannot find state (" + state_name + ")")
+        self.bug("Cannot find state (" + state_name + ")")
+
+    def __find_msg(self, msg_hdr):
+        for msg in self.messages:
+            if msg_hdr in msg:
+                return msg
+        return None
 
     def __rx_filter(self, msg):
         # We do some basic protocol checking here.
         msg_list = msg['message']
         msg_hdr = msg_list[0]
-        if msg_hdr not in self.messages:
-            Llog.LogError("Invalid message header: " + msg_hdr)
+        msg_def = self.__find_msg(msg_hdr)
+        if msg_def is None:
+            self.log_error("Invalid message header: " + msg_hdr)
             self.stats.rx_err_bad_header += 1
             return None
 
-        fields = self.messages[msg_hdr]
+        fields = msg_def[msg_hdr]
 
         if len(msg_list) - 1 != len(fields):
-            Llog.LogError("Invalid number of message fields"
+            self.log_error("Invalid number of message fields"
                           + " received for message '"+ msg_hdr + "'"
                           + " Expecting " + str(len(fields)) + " but got "
                           + str(len(msg_list) - 1))
@@ -73,7 +88,7 @@ class Protocol(object):
             try:
                 field_list.append(field['type'](rcv_field))
             except:
-                Llog.LogError("Invalid field type received for field ("
+                self.log_error("Invalid field type received for field ("
                               + field['name'] + ") ("
                               + rcv_field + ")")
                 return None
@@ -104,7 +119,7 @@ class Protocol(object):
                 action = msg_def['action']
                 if action is not None:
                     if action(msg) == False:
-                        Llog.LogError("Action failed for message ("
+                        self.log_error("Action failed for message ("
                                       + msg_hdr + ")")
                         return
                 self.__set_state(next_state)
@@ -112,7 +127,7 @@ class Protocol(object):
 
         # If we get here, we could not find this message header
         # in our list of messages.
-        Llog.LogError("Invalid message (" + msg_hdr + ") received!")
+        self.log_error("Invalid message (" + msg_hdr + ") received!")
 
     def action(self, action_name):
         state_actions = self.current_state['actions']
@@ -124,16 +139,18 @@ class Protocol(object):
                 action = action_def['action']
                 next_state = action_def['next_state']
                 if action is not None:
+                    self.log_debug("action: " + action_name)
                     if action() == False:
-                        Llog.LogError("Action failed for action ("
+                        self.log_error("Action failed for action ("
                                       + action_name + ")")
                         return
                 self.__set_state(next_state)
                 return
 
         # If we get here, we could not find this action in our list
-        # of actions for this state.  This is a SW error!
-        Llog.Bug("Invalid action (" + action_name + ") received!")
+        # of actions for this state.  This is not necessarily a SW
+        # error, as the state may have changed asynchronously.
+        self.log_info("Invalid action (" + action_name + ") received!")
 
     def send(self, msg):
         msg_hdr = msg['message'][0]
@@ -176,24 +193,24 @@ class ProtocolClient(Protocol):
             # ROUTER socket must provide an address when sending
             # all messages.  By default, the protocol server address
             # will be set to the protocol name.
-            msg['address'] = self.location_descriptor['name']
+            msg['address'] = self.name
         Protocol.send(self, msg)
 
 
 def test1():
 
-    messages = [{'HOWDY', []}, \
-                {'HI', [{'name':'file name', \
+    messages = [{'HOWDY': []}, \
+                {'HI': [{'name':'file name', \
                          'type':types.StringType}, \
                         {'name':'md5sum', \
                          'type':types.StringType}]}, \
-                {'RUN', []}, \
-                {'RUN_OK', []}, \
-                {'STOP', []}, \
-                {'STOP_OK', []}, \
-                {'FINISHED', [{'name':'error code',
+                {'RUN': []}, \
+                {'RUN_OK': []}, \
+                {'STOP': []}, \
+                {'STOP_OK': []}, \
+                {'FINISHED': [{'name':'error code',
                                'type':types.IntType}]}, \
-                {'QUIT', []}]
+                {'QUIT': []}]
 
     class MyProtoServer(object):
 
@@ -238,7 +255,7 @@ def test1():
             self.proto.send(msg)
 
         def do_quit(self, msg):
-            self.close()
+            pass
 
         def do_stop(self, msg):
             msg_list = ["STOP_OK"]
@@ -249,169 +266,116 @@ def test1():
             self.proto.close()
 
     class MyProtoClient(object):
-        def __init__(self):
-            location_descriptor = {'name':"myproto",
-                                   'type':zmq.REQ,
-                                   'protocol':"tcp",
-                                   'address':"127.0.0.1",
-                                   'port':4122}
-            protocol_descriptor = {'OK':(1,2,self.do_ok)}
-            self.proto = ProtocolClient(location_descriptor,
-                                        protocol_descriptor)
+        def __init__(self, address, port):
+            states = [{'name':"START",
+                       'actions':[{'name':"begin",
+                                   'action':self.do_begin,
+                                   'next_state':"WAIT_FOR_HI"}],
+                       'messages':[]},
+                      {'name':"WAIT_FOR_HI",
+                       'actions':[],
+                       'messages':[{'name':"HI",
+                                    'action':None,
+                                    'next_state':"READY"}]},
+                      {'name':"READY",
+                       'actions':[{'name':"run",
+                                   'action':self.do_run,
+                                   'next_state':"WAIT_FOR_RUN_OK"},
+                                  {'name':"quit",
+                                   'action':self.do_quit,
+                                   'next_state':"START"}],
+                       'messages':[]},
+                      {'name':"WAIT_FOR_RUN_OK",
+                       'actions':[],
+                       'messages':[{'name':"RUN_OK",
+                                    'action':None,
+                                    'next_state':"RUNNING"}]},
+                      {'name':"RUNNING",
+                       'actions':[{'name':"stop",
+                                   'action':self.do_stop,
+                                   'next_state':"WAIT_FOR_STOP_OK"}],
+                       'messages':[]},
+                      {'name':"WAIT_FOR_STOP_OK",
+                       'actions':[],
+                       'messages':[{'name':"STOP_OK",
+                                    'action':None,
+                                    'next_state':"READY"}]}]
+            location = {'type':zmq.ROUTER,
+                        'protocol':"tcp",
+                        'address':address,
+                        'port':port}
+
+            self.proto = ProtocolClient("myproto",
+                                        location,
+                                        messages,
+                                        states)
             self.wait_for_that_ok = False
             self.value = 0
 
-        def hello(self):
-            msg = {'message':["HELLO"]}
+        def start(self):
+            self.proto.action("begin")
+
+        def run(self):
+            self.proto.action("run")
+
+        def stop(self):
+            self.proto.action("stop")
+
+        def quit(self):
+            self.proto.action("quit")
+
+        def do_begin(self):
+            msg = {'message':["HOWDY"]}
             self.proto.send(msg)
 
-        def bye(self):
-            msg = {'message':["BYE"]}
+        def do_run(self):
+            msg = {'message':["RUN"]}
             self.proto.send(msg)
 
-        def that(self, value):
-            msg = {'message':["THAT", str(value)]}
+        def do_stop(self):
+            msg = {'message':["STOP"]}
             self.proto.send(msg)
-            self.wait_for_that_ok = True
 
-        def do_ok(self, msg):
-            msg_list = msg['message']
-            Llog.LogDebug("RX: " + msg_list[0] + " len:" + str(len(msg_list)))
-            if self.wait_for_that_ok is True:
-                value = int(msg_list[1])
-                Llog.LogInfo("That value: " + str(value))
-                self.value = value
-                self.wait_for_that_ok = False
+        def do_quit(self):
+            msg = {'message':["QUIT"]}
+            self.proto.send(msg)
 
         def close(self):
             self.proto.close()
 
-    Llog.SetLevel("I")
-
     s = MyProtoServer()
-    c = MyProtoClient()
+    c = MyProtoClient("127.0.0.1", s.proto.zsocket.port)
 
-    c.hello()
-    time.sleep(1)
-    assert(s.got_hello is True)
+    c.start()
+    time.sleep(3)
+    assert(c.proto.get_state() == "READY")
+    assert(s.proto.get_state() == "READY")
 
-    value = 1234
-    c.that(value)
+    c.run()
     time.sleep(1)
-    assert(s.got_that is True)
-    assert(c.value == value + 1)
+    assert(c.proto.get_state() == "RUNNING")
+    assert(s.proto.get_state() == "RUNNING")
 
-    c.bye()
+    # Make sure we cant quit in the running state
+    c.quit()
     time.sleep(1)
-    assert(s.got_bye is True)
+    assert(c.proto.get_state() == "RUNNING")
+    assert(s.proto.get_state() == "RUNNING")
+
+    c.stop()
+    time.sleep(1)
+    assert(c.proto.get_state() == "READY")
+    assert(s.proto.get_state() == "READY")
+
+    c.quit()
+    time.sleep(1)
+    assert(c.proto.get_state() == "START")
+    assert(s.proto.get_state() == "START")
 
     c.close()
     s.close()
     print "test1() PASSED"
 
-def test2():
-
-    # ROUTER-ROUTER test
-    class MyProtoServer(object):
-        def __init__(self):
-            location_descriptor = {'name':"myproto",
-                                   'type':zmq.ROUTER,
-                                   'protocol':"tcp",
-                                   'bind_address':"*",
-                                   'port_range':[4122,4132]}
-            protocol_descriptor = {'HELLO':(1,1,self.do_hello),
-                                   'BYE':(1,2,self.do_bye),
-                                   'THAT':(2,2,self.do_that)}
-            self.proto = ProtocolServer(location_descriptor,
-                                        protocol_descriptor)
-            self.got_hello = False
-            self.got_bye = False
-            self.got_that = False
-
-        def do_hello(self, msg):
-            msg['message'][0] = "OK"
-            self.got_hello = True
-            self.proto.send(msg)
-
-        def do_bye(self, msg):
-            msg['message'][0] = "OK"
-            self.got_bye = True
-            self.proto.send(msg)
-
-        def do_that(self, msg):
-            value = int(msg['message'][1])
-            Llog.LogInfo("do_that: " + str(value))
-            value += 1
-            msg['message'][0] = "OK"
-            msg['message'][1] = str(value)
-            self.got_that = True
-            self.proto.send(msg)
-
-        def close(self):
-            self.proto.close()
-
-    class MyProtoClient(object):
-        def __init__(self):
-            location_descriptor = {'name':"myproto",
-                                   'type':zmq.ROUTER,
-                                   'protocol':"tcp",
-                                   'address':"127.0.0.1",
-                                   'port':4122}
-            protocol_descriptor = {'OK':(1,2,self.do_ok)}
-            self.proto = ProtocolClient(location_descriptor,
-                                        protocol_descriptor)
-            self.wait_for_that_ok = False
-            self.value = 0
-
-        def close(self):
-            self.proto.close()
-
-        def hello(self):
-            msg = {'message':["HELLO"]}
-            self.proto.send(msg)
-
-        def bye(self):
-            msg = {'message':["BYE"]}
-            self.proto.send(msg)
-
-        def that(self, value):
-            msg = {'message':["THAT", str(value)]}
-            self.proto.send(msg)
-            self.wait_for_that_ok = True
-
-        def do_ok(self, msg):
-            msg_list = msg['message']
-            Llog.LogDebug("RX: " + msg_list[0] + " len:" + str(len(msg_list)))
-            if self.wait_for_that_ok is True:
-                value = int(msg_list[1])
-                Llog.LogInfo("That value: " + str(value))
-                self.value = value
-                self.wait_for_that_ok = False
-
-    Llog.SetLevel("D")
-
-    s = MyProtoServer()
-    c = MyProtoClient()
-
-    c.hello()
-    time.sleep(1)
-    assert(s.got_hello is True)
-
-    value = 1234
-    c.that(value)
-    time.sleep(1)
-    assert(s.got_that is True)
-    assert(c.value == value + 1)
-
-    c.bye()
-    time.sleep(1)
-    assert(s.got_bye is True)
-
-    c.close()
-    s.close()
-    print "test2() PASSED"
-
 
 if __name__ == '__main__':
     test1()
-    test2()
