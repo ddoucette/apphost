@@ -9,42 +9,35 @@ from local_log import *
 from override import *
 
 
-class AppControlProtocolServer(object):
-
+class AppControlProtocol(object):
     """
         AppControlProtocol:
 
-         client --->  HELLO                   ---> server
+         client --->  HOWDY                   ---> server
              The server can be either empty, as in just started up,
              or loaded, with a valid application file or
              running, with the specified application file and md5.
-         client <---  HELLO <ready>           <--- server
-         client <---  HELLO <loaded> <filename,md5>    <--- server
-         client <---  HELLO <running> <filename,md5>   <--- server
+         client <---  HI    <ready>           <--- server
+         client <---  LOAD_OK <filename,md5>    <--- server
+         client <---  RUN_OK  <filename,md5>   <--- server
 
          client --->  LOAD <filename,md5> ---> server
-         client <---    LOAD unknown      <--- server
-             The server does not have this file, or the md5 does
-             not match.  The client must chunk the file to the
-             server.
-         client --->  CHUNK <size,is_last>  ---> server
-         client --->  CHUNK <size,is_last>  ---> server
-         client --->  CHUNK <size,is_last>  ---> server
-         client <---  CHUNK <ok>            <--- server
-         client --->  CHUNK <size,is_last>  ---> server
-         client --->  CHUNK <size,is_last>  ---> server
-         client --->  CHUNK <size,is_last=true>  ---> server
-         client <---  CHUNK <done,md5> <--- server
+         client --->  CHUNK <is_last>  ---> server
+         client --->  CHUNK <is_last>  ---> server
+         client --->  CHUNK <is_last>  ---> server
+         client <---  CHUNK_OK         <--- server
+         client --->  CHUNK <is_last>  ---> server
+         client --->  CHUNK <is_last>  ---> server
+         client --->  CHUNK <is_last=true>  ---> server
+         client <---  LOAD_OK <filename,md5>    <--- server
              All bytes have been received.  The server now 
              acknowledges the presense of the original file.
-         client --->  LOAD <filename,md5> ---> server
-         client <---  LOAD <filename,md5> <--- server
          client --->  RUN <command>       ---> server
-         client <---  RUNNING             <--- server
+         client <---  RUN_OK  <filename,md5>   <--- server
          client --->  STOP                ---> server
-         client <---  STOPPED             <--- server
+         client <---  STOP_OK             <--- server
          client --->  RUN <command>       ---> server
-         client <---  RUNNING             <--- server
+         client <---  RUN_OK  <filename,md5>   <--- server
          client <---  EVENT               <--- server
          client <---  EVENT               <--- server
          client <---  EVENT               <--- server
@@ -57,7 +50,55 @@ class AppControlProtocolServer(object):
          client --->  LAOD                ---> server
          client <---  ERROR <reason/description> <--- server
     """
+    proto_messages = [{'HOWDY': [{'name':'major version', \
+                                  'type':types.IntType}, \
+                                 {'name':'minor version', \
+                                  'type':types.IntType}]}, \
+                      {'HI': [{'name':'major version', \
+                               'type':types.IntType}, \
+                              {'name':'minor version', \
+                               'type':types.IntType}]}, \
+                      {'LOAD_OK': [{'name':'filename', \
+                                    'type':types.StringType}, \
+                                   {'name':'md5sum', \
+                                    'type':types.StringType}]}, \
+                      {'RUN_OK': [{'name':'filename', \
+                                   'type':types.StringType}, \
+                                  {'name':'md5sum', \
+                                   'type':types.StringType}]}, \
+                      {'LOAD': [{'name':'filename', \
+                                 'type':types.StringType}, \
+                                {'name':'md5sum', \
+                                 'type':types.StringType}]}, \
+                      {'CHUNK': [{'name':'is last', \
+                                  'type':types.BooleanType}, \
+                              {'name':'data block', \
+                               'type':types.StringType}]}, \
+                      {'CHUNK_OK': []}, \
+                      {'RUN': [{'name':'command', \
+                                'type':types.StringType}]}, \
+                      {'STOP': []}, \
+                      {'STOP_OK': []}, \
+                      {'FINISHED': [{'name':'error code', \
+                                     'type':types.IntType}]}, \
+                      {'EVENT': [{'name':'event type', \
+                                  'type':types.StringType},
+                                 {'name':'event name', \
+                                  'type':types.StringType}, \
+                                 {'name':'timestamp', \
+                                  'type':types.StringType}, \
+                                 {'name':'*', \
+                                  'type':types.StringType, \
+                                  'min':0,
+                                  'max':20}]}, \
+                      {'QUIT': []}]
+
+
+class AppControlProtocolServer(object):
+
     states = ["INIT", "LOADING", "LOADED", "RUNNING"]
+    version_major = 1
+    version_minor = 0
 
     def __init__(self):
         location_descriptor = {'name':"appctl",
