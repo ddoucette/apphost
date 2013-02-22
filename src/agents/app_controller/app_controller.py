@@ -96,11 +96,48 @@ class AppControlProtocol(object):
 
 class AppControlProtocolServer(object):
 
-    states = ["INIT", "LOADING", "LOADED", "RUNNING"]
     version_major = 1
     version_minor = 0
 
     def __init__(self):
+        states = [{'name':"READY",
+                   'actions':[],
+                   'messages':[{'name':"HOWDY",
+                                'action':self.do_howdy,
+                                'next_state':"READY"},
+                               {'name':"LOAD",
+                                'action':self.do_load,
+                                'next_state':"LOADING"}],
+                  {'name':"LOADING",
+                   'actions':[{'name':"load_complete",
+                               'action':self.do_load_complete,
+                               'next_state':"LOADED"}],
+                   'messages':[{'name':"CHUNK",
+                                'action':self.do_chunk,
+                                'next_state':"LOADING"}]},
+                  {'name':"LOADED",
+                   'actions':[],
+                   'messages':[{'name':"RUN",
+                                'action':self.do_run,
+                                'next_state':"RUNNING"}],
+                  {'name':"RUNNING",
+                   'actions':[{'name':"finished",
+                               'action':self.do_finished,
+                               'next_state':"LOADED"},
+                              {'name':"event",
+                               'action':self.do_event,
+                               'next_state':"RUNNING"}],
+                   'messages':[{'name':"STOP",
+                                'action':self.do_stop,
+                                'next_state':"LOADED"}],
+                  {'name':"*",
+                   'actions':[{'name':"error",
+                               'action':self.do_error,
+                               'next_state':"READY"}],
+                   'messages':[{'name':"QUIT",
+                                'action':self.do_quit,
+                                'next_state':"READY"}]}]
+
         location_descriptor = {'name':"appctl",
                                'type':zmq.ROUTER,
                                'protocol':"tcp",
