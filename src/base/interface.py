@@ -17,18 +17,17 @@ class Interface(object):
 
     """
     """
-    def __init__(self, rx_filter=None, rx_cback=None):
+    def __init__(self, rx_cback=None, action_cback=None):
 
         self.ctx = zmq.Context.instance()
         self.in_pipe = zsocket.zpipe()
         self.poller = zmq.Poller()
         self.poller.register(self.in_pipe[1].socket, zmq.POLLIN)
-        self.poller.register(self.in_pipe[0].socket, zmq.POLLIN)
         self.alive = True
         self.closed = False
         self.sockets = []
-        self.protocol_rx_cback = rx_cback
-        self.rx_filter = rx_filter
+        self.rx_cback = rx_cback
+        self.action_cback = action_cback
 
         self.thread = threading.Thread(target=self.__thread_entry)
         self.thread.daemon = True
@@ -111,6 +110,12 @@ class Interface(object):
             self.in_pipe[1].close()
         self.ctx.destroy()
 
+    def do_action(self, action_name, action_args=[]):
+        msg_list = ["INTF_ACTION", action_name]
+        if len(action_args) > 0:
+            msg_list += action_args
+        self.__push_in_msg_raw({'message':msg_list})
+
     def __thread_entry(self):
         # This is the one and only interface processing thread.
         # This thread pulls all messages from the interface command
@@ -133,8 +138,6 @@ class Interface(object):
 
             if self.in_pipe[1].socket in items:
                 self.__process_inbound_msgs()
-            elif self.in_pipe[0].socket in items:
-                self.__process_outbound_msgs()
             else:
                 # Check to see if any of our sockets are now readable
                 for zskt in self.sockets:
@@ -147,21 +150,13 @@ class Interface(object):
             return
         assert('message' in msg)
 
-        if self.rx_filter is not None:
-            msg = self.rx_filter(msg)
+        if self.rx_cback is not None:
+            msg = self.rx_cback(msg)
 
         if msg is not None:
             # The message has not been filtered, push it up
             # to the protocol
             self.in_pipe[1].send(msg)
-
-    def __process_outbound_msgs(self):
-        msg = self.in_pipe[0].recv()
-        if msg is None:
-            return
-
-        if self.protocol_rx_cback is not None:
-            self.protocol_rx_cback(msg)
 
     def __process_inbound_msgs(self):
         msg = self.in_pipe[1].recv()
@@ -180,6 +175,18 @@ class Interface(object):
         elif msg_list[0] == "INTF_KILL":
             # We are finished.  Just get out of the thread.
             self.alive = False
+            return
+        elif msg_list[0] == "INTF_ACTION":
+            # Message to execute our action callback.  Basically a
+            # mechanism to push processing into the interface thread
+            # for safe concurrent processing.
+            if self.action_cback is not None:
+                action_name = msg_list[1]
+                if len(msg_list) > 2:
+                    action_args = msg_list[2:]
+                else:
+                    action_args = []
+                self.action_cback(action_name, action_args)
             return
         else:
             # Check to verify we have 1, and only 1 socket.
@@ -225,7 +232,7 @@ def test1():
                                            "MYPROTO",
                                            port)
             client.connect()
-            self.interface = Interface(self.handle_proto_msg)
+            self.interface = Interface(rx_cback=self.handle_proto_msg)
             self.interface.add_socket(client)
             self.done = False
 

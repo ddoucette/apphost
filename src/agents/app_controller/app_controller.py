@@ -13,15 +13,15 @@ class AppControlProtocol(object):
     """
         AppControlProtocol:
 
-         client --->  HOWDY                   ---> server
+         client --->  HOWDY <username><major><minor>   ---> server
              The server can be either empty, as in just started up,
              or loaded, with a valid application file or
              running, with the specified application file and md5.
-         client <---  HI    <ready>           <--- server
-         client <---  LOAD_OK <filename,md5>    <--- server
-         client <---  RUN_OK  <filename,md5>   <--- server
+         client <---  HI <major><minor><state><file_name><md5> <--- server
+                         or
+         client <---  ERROR <reason>          <--- server
 
-         client --->  LOAD <filename,md5> ---> server
+         client --->  LOAD <file_name,md5> ---> server
          client --->  CHUNK <is_last>  ---> server
          client --->  CHUNK <is_last>  ---> server
          client --->  CHUNK <is_last>  ---> server
@@ -29,15 +29,16 @@ class AppControlProtocol(object):
          client --->  CHUNK <is_last>  ---> server
          client --->  CHUNK <is_last>  ---> server
          client --->  CHUNK <is_last=true>  ---> server
-         client <---  LOAD_OK <filename,md5>    <--- server
+         client <---  LOAD_OK <file_name,md5>    <--- server
              All bytes have been received.  The server now 
              acknowledges the presense of the original file.
+
          client --->  RUN <command>       ---> server
-         client <---  RUN_OK  <filename,md5>   <--- server
+         client <---  RUN_OK              <--- server
          client --->  STOP                ---> server
          client <---  STOP_OK             <--- server
          client --->  RUN <command>       ---> server
-         client <---  RUN_OK  <filename,md5>   <--- server
+         client <---  RUN_OK              <--- server
          client <---  EVENT               <--- server
          client <---  EVENT               <--- server
          client <---  EVENT               <--- server
@@ -50,62 +51,63 @@ class AppControlProtocol(object):
          client --->  LAOD                ---> server
          client <---  ERROR <reason/description> <--- server
     """
-    proto_messages = [{'HOWDY': [{'name':'major version', \
-                                  'type':types.IntType}, \
-                                 {'name':'minor version', \
-                                  'type':types.IntType}]}, \
-                      {'HI': [{'name':'major version', \
-                               'type':types.IntType}, \
-                              {'name':'minor version', \
-                               'type':types.IntType}]}, \
-                      {'LOAD_OK': [{'name':'filename', \
-                                    'type':types.StringType}, \
-                                   {'name':'md5sum', \
-                                    'type':types.StringType}]}, \
-                      {'RUN_OK': [{'name':'filename', \
-                                   'type':types.StringType}, \
-                                  {'name':'md5sum', \
-                                   'type':types.StringType}]}, \
-                      {'LOAD': [{'name':'filename', \
-                                 'type':types.StringType}, \
-                                {'name':'md5sum', \
-                                 'type':types.StringType}]}, \
-                      {'CHUNK': [{'name':'is last', \
-                                  'type':types.BooleanType}, \
-                              {'name':'data block', \
-                               'type':types.StringType}]}, \
-                      {'CHUNK_OK': []}, \
-                      {'RUN': [{'name':'command', \
+    messages = [{'HOWDY': [{'name':'user name', \
+                            'type':types.StringType}, \
+                           {'name':'major version', \
+                            'type':types.IntType}, \
+                           {'name':'minor version', \
+                            'type':types.IntType}]}, \
+                  {'HI': [{'name':'major version', \
+                           'type':types.IntType}, \
+                          {'name':'minor version', \
+                           'type':types.IntType}, \
+                          {'name':'state', \
+                           'type':types.StringType}, \
+                          {'name':'file_name', \
+                           'type':types.StringType}, \
+                          {'name':'md5sum', \
+                           'type':types.StringType}]}, \
+                  {'LOAD': [{'name':'file_name', \
+                             'type':types.StringType}, \
+                            {'name':'md5sum', \
+                             'type':types.StringType}]}, \
+                  {'LOAD_OK': [{'name':'file_name', \
+                                'type':types.StringType}, \
+                               {'name':'md5sum', \
                                 'type':types.StringType}]}, \
-                      {'STOP': []}, \
-                      {'STOP_OK': []}, \
-                      {'FINISHED': [{'name':'error code', \
-                                     'type':types.IntType}]}, \
-                      {'EVENT': [{'name':'event type', \
-                                  'type':types.StringType},
-                                 {'name':'event name', \
-                                  'type':types.StringType}, \
-                                 {'name':'timestamp', \
-                                  'type':types.StringType}, \
-                                 {'name':'*', \
-                                  'type':types.StringType, \
-                                  'min':0,
-                                  'max':20}]}, \
-                      {'QUIT': []}]
-
+                  {'CHUNK': [{'name':'is last', \
+                              'type':types.BooleanType}, \
+                             {'name':'data block', \
+                              'type':types.StringType}]}, \
+                  {'CHUNK_OK': []}, \
+                  {'RUN': [{'name':'command', \
+                            'type':types.StringType}]}, \
+                  {'RUN_OK': []}, \
+                  {'STOP': []}, \
+                  {'STOP_OK': []}, \
+                  {'FINISHED': [{'name':'error code', \
+                                 'type':types.IntType}]}, \
+                  {'EVENT': [{'name':'event type', \
+                              'type':types.StringType},
+                             {'name':'event name', \
+                              'type':types.StringType}, \
+                             {'name':'timestamp', \
+                              'type':types.StringType}, \
+                             {'name':'*', \
+                              'type':types.StringType, \
+                              'min':0,
+                              'max':20}]}, \
+                  {'QUIT': []}]
 
 class AppControlProtocolServer(object):
 
     version_major = 1
     version_minor = 0
 
-    def __init__(self):
+    def __init__(self, user_name):
         states = [{'name':"READY",
                    'actions':[],
-                   'messages':[{'name':"HOWDY",
-                                'action':self.do_howdy,
-                                'next_state':"READY"},
-                               {'name':"LOAD",
+                   'messages':[{'name':"LOAD",
                                 'action':self.do_load,
                                 'next_state':"LOADING"}],
                   {'name':"LOADING",
@@ -133,66 +135,72 @@ class AppControlProtocolServer(object):
                   {'name':"*",
                    'actions':[{'name':"error",
                                'action':self.do_error,
-                               'next_state':"READY"}],
+                               'next_state':"-"}],
                    'messages':[{'name':"QUIT",
                                 'action':self.do_quit,
-                                'next_state':"READY"}]}]
+                                'next_state':"READY"},
+                               {'name':"HOWDY",
+                                'action':self.do_howdy,
+                                'next_state':"-"}]}]
+        location = {'type':zmq.ROUTER,
+                    'protocol':"tcp",
+                    'bind_address':"*",
+                    'port_range':[8100,8500]}
 
-        location_descriptor = {'name':"appctl",
-                               'type':zmq.ROUTER,
-                               'protocol':"tcp",
-                               'bind_address':"*",
-                               'port_range':[8100,8500]}
-        protocol_descriptor = {'HELLO':(1,1,self.do_hello),
-                               'LOAD':(3,3,self.do_load),
-                               'CHUNK':(3,3,self.do_chunk),
-                               'RUN':(2,2,self.do_run),
-                               'STOP':(1,1,self.do_stop),
-                               'DONE':(1,1,self.do_done)}
         self.proto = protocol.ProtocolServer(
-                                    location_descriptor,
-                                    protocol_descriptor)
-        self.state = "INIT"
-        self.filename = ""
+                                    "app-ctrl",
+                                    location,
+                                    AppControlProtocol.messages,
+                                    states)
+        self.user_name = user_name
+        self.file_name = ""
         self.md5sum = ""
         self.f = None
         self.alive = True
+        self.client_version_minor = 0
 
-    def do_hello(self, msg):
+    def do_howdy(self, msg):
+
+        # Verify the username and protocol version information.
+        # The username is particularily important as a client may
+        # be connecting to this port in error (i.e. for another user).
         msg_list = msg['message']
-        if self.state == "INIT":
-            msg_list = ["HELLO", "ready"]
-        elif self.state == "LOADED":
-            msg_list = ["HELLO", "loaded", self.filename, self.md5sum]
-        elif self.state == "RUNNING":
-            msg_list = ["HELLO", "running", self.filename, self.md5sum]
-        elif self.state == "LOADING":
-            # This is strange.  We get a HELLO in the middle of loading
-            # an application file.  Oh well, just close and delete
-            # our in-progress file and return 'ready'.
-            self.__reset()
-            msg_list = ["HELLO", "ready"]
+        user_name = msg_list[1]
+        version_major = msg_list[2]
+        version_minor = msg_list[3]
+
+        if self.user_name != user_name:
+            self.send_error("Invalid user name specified!")
+            return
+
+        if self.version_major != version_major:
+            self.send_error("Invalid major version!  Version ("
+                            + self.version_major + ") supported!")
+            return
+
+        self.client_version_minor = version_minor
+
+        state = self.proto.get_state()
+        if self.file_name = "":
+            file_name = "-"
+            md5sum = "-"
         else:
-            assert(False)
-        Llog.LogInfo("Received hello!")
+            file_name = self.file_name
+            md5sum = self.md5sum
+
+        msg_list = ["HI",
+                    self.version_major,
+                    self.version_minor,
+                    state,
+                    file_name,
+                    md5sum
+                    ]
         msg['message'] = msg_list
         self.proto.send(msg)
 
     def do_load(self, msg):
-        filename = msg['message'][1]
-        md5sum = msg['message'][2]
-
-        if self.state == "LOADED" and \
-           filename == self.filename and md5sum == self.md5sum:
-            msg_list = ["LOAD", filename, md5sum]
-        else:
-            self.filename = filename
-            self.md5sum = md5sum
-            self.state = "INIT"
-            msg_list = ["LOAD", "unknown"]
-
-        msg['message'] = msg_list
-        self.proto.send(msg)
+        self.file_name = msg['message'][1]
+        self.md5sum = msg['message'][2]
 
     def do_chunk(self, msg):
         is_last = msg['message'][1]
@@ -205,7 +213,7 @@ class AppControlProtocolServer(object):
                 self.state = "LOADING"
             else:
                 # Could not create/open the file
-                msg_list = ["ERROR", "Could not open file: " + self.filename]
+                msg_list = ["ERROR", "Could not open file: " + self.file_name]
                 msg['message'] = msg_list
                 self.proto.send(msg)
                 return
@@ -238,7 +246,7 @@ class AppControlProtocolServer(object):
         if self.state != "LOADED":
             msg_list = ["ERROR", "Invalid state: " + self.state]
         else:
-            Llog.LogInfo("Executing: " + self.filename + " " + command)
+            Llog.LogInfo("Executing: " + self.file_name + " " + command)
             self.state = "RUNNING"
             msg_list = ["RUNNING"]
             # XXX do JavaAppExec
@@ -250,7 +258,7 @@ class AppControlProtocolServer(object):
         if self.state != "RUNNING":
             msg_list = ["ERROR", "Invalid state: " + self.state]
         else:
-            Llog.LogInfo("Stopping: " + self.filename)
+            Llog.LogInfo("Stopping: " + self.file_name)
             self.state = "LOADED"
             msg_list = ["STOPPED"]
             # XXX do JavaAppExec
@@ -268,16 +276,16 @@ class AppControlProtocolServer(object):
 
     def __create_file(self):
         try:
-            self.f = open(self.filename, "w+")
+            self.f = open(self.file_name, "w+")
         except:
-            Llog.LogError("Cannot open " + self.filename + " for writting!")
+            Llog.LogError("Cannot open " + self.file_name + " for writting!")
 
     def __reset(self):
         if self.f is not None:
             self.f.close()
             self.f = None
         self.state = "INIT"
-        self.filename = ""
+        self.file_name = ""
         self.md5sum = ""
 
     def __write_file(self, data_block):
@@ -291,12 +299,12 @@ class AppControlProtocolServer(object):
 
     def __calc_md5sum(self):
         assert(self.f != "")
-        return zhelpers.md5sum(self.filename)
+        return zhelpers.md5sum(self.file_name)
 
 
 class AppControlProtocolClient(object):
     """
-        For a description of the protocol, see AppControlProtocolServer
+        For a description of the protocol, see AppControlProtocol
         above.
     """
     states = ["INIT", "LOADING", "CHUNKING", "LOADED", "RUNNING"]
@@ -319,7 +327,7 @@ class AppControlProtocolClient(object):
                                     location_descriptor,
                                     protocol_descriptor)
         self.state = "INIT"
-        self.filename = ""
+        self.file_name = ""
         self.md5sum = ""
         self.f = None
         self.alive = True
@@ -331,35 +339,35 @@ class AppControlProtocolClient(object):
         Llog.LogInfo("Sending a HELLO")
         self.proto.send({'message':["HELLO"]})
 
-    def load(self, filename):
+    def load(self, file_name):
         if self.state != "INIT":
             Llog.LogError("Cannot load file: "
-                           + filename + " in state " + self.state)
+                           + file_name + " in state " + self.state)
             return
 
-        md5sum = zhelpers.md5sum(filename)
+        md5sum = zhelpers.md5sum(file_name)
         if md5sum is None:
-            Llog.LogError("Cannot find file: " + filename)
+            Llog.LogError("Cannot find file: " + file_name)
             return
 
         # Send a LOAD message to the server for this file.  The
         # server may already have a copy.
-        self.filename = filename
+        self.file_name = file_name
         self.md5sum = md5sum
         self.state = "LOADING"
-        self.proto.send({'message':["LOAD", filename, md5sum]})
+        self.proto.send({'message':["LOAD", file_name, md5sum]})
 
     def run(self, command):
         if self.state != "LOADED":
             Llog.LogError("Cannot run application: "
-                           + self.filename + " in state " + self.state)
+                           + self.file_name + " in state " + self.state)
             return
         self.proto.send({'message':["RUN", command]})
 
     def stop(self):
         if self.state != "LOADED" and self.state != "RUNNING":
             Llog.LogError("Cannot stop application: "
-                           + self.filename + " in state " + self.state)
+                           + self.file_name + " in state " + self.state)
             return
         self.proto.send({'message':["STOP"]})
 
@@ -373,11 +381,11 @@ class AppControlProtocolClient(object):
             # The server is ready to receive our application file
             pass
         elif msg_list[1] == "loaded":
-            self.filename = msg_list[2]
+            self.file_name = msg_list[2]
             self.md5sum = msg_list[3]
             self.state = "LOADED"
         elif msg_list[1] == "running":
-            self.filename = msg_list[2]
+            self.file_name = msg_list[2]
             self.md5sum = msg_list[3]
             self.state = "RUNNING"
         else:
@@ -392,11 +400,11 @@ class AppControlProtocolClient(object):
             return
 
         msg_list = msg['message']
-        if msg_list[1] == self.filename:
+        if msg_list[1] == self.file_name:
             # The file is present on the server.
             if msg_list[2] != self.md5sum:
                 Llog.LogError("Server file ("
-                              + self.filename
+                              + self.file_name
                               + ") has an invalid md5sum: "
                               + msg_list[2]
                               + " The md5sum should be: "
@@ -410,10 +418,10 @@ class AppControlProtocolClient(object):
         # chunk-copy the file over
         assert(self.f is None)
         try:
-            self.f = open(self.filename, "rb")
+            self.f = open(self.file_name, "rb")
             assert(self.f is not None)
         except:
-            Llog.LogError("Cannot open " + self.filename + " for reading!")
+            Llog.LogError("Cannot open " + self.file_name + " for reading!")
         self.chunks_outstanding = 0
         self.state = "CHUNKING"
         self.__send_file_chunks()

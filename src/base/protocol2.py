@@ -36,7 +36,17 @@ class Protocol(log.Logger):
         self.states = states
         self.name = name
         self.current_state = states[0]
-        self.interface = interface.Interface(self.__rx_msg, None)
+
+        # Within the 'states' array, there may be a description
+        # which applies to 'all states'.  I.e. the state name is '*'.
+        # For convenience, we reference this array entry directly.
+        self.all_states = None
+        for state in states:
+            if state['name'] == "*":
+                self.all_states = state
+                break
+
+        self.interface = interface.Interface(self.__rx_msg, self.do_intf_action)
 
         self.log_info("Created protocol (" + name + ") "
                      + str(len(messages)) + " messages, "
@@ -46,6 +56,12 @@ class Protocol(log.Logger):
         return self.current_state['name']
 
     def __set_state(self, state_name):
+
+        # if the state_name == '-', this is a signal to just
+        # stay in our current state.
+        if state_name == "-":
+            return
+
         # Find the state name within our list of valid states
         for state in self.states:
             if state['name'] == state_name:
@@ -63,6 +79,10 @@ class Protocol(log.Logger):
 
     def __rx_filter(self, msg):
         # We do some basic protocol checking here.
+        # First, we make sure the message just received is actually
+        # a message we understand.  (I.e. this message is in our
+        # list of valid messages)
+
         msg_list = msg['message']
         msg_hdr = msg_list[0]
         msg_def = self.__find_msg(msg_hdr)
@@ -82,6 +102,10 @@ class Protocol(log.Logger):
             return None
 
         # Loop through each field and cast it into its type.
+        # In the 'messages' array, we describe each field of
+        # a received message.  Use these descriptions and types
+        # to create a message list which contains the values cast
+        # into their correct type.
         field_list = [msg_hdr]
         for i, field in enumerate(fields):
             rcv_field = msg_list[i + 1]
@@ -110,6 +134,7 @@ class Protocol(log.Logger):
         # our current state.
         msg_hdr = msg['message'][0]
         state_messages = self.current_state['messages']
+
         # state_messages is a list of all messages we process in this
         # state.  Find the received message in this list and perform
         # the action.
@@ -125,11 +150,33 @@ class Protocol(log.Logger):
                 self.__set_state(next_state)
                 return
 
-        # If we get here, we could not find this message header
-        # in our list of messages.
-        self.log_error("Invalid message (" + msg_hdr + ") received!")
+        # If we get here, our current state description does not
+        # include the message received.  However, this message may
+        # be accepted in our 'all_states' list of messages.
+        if self.all_states is not None:
+            state_messages = self.all_states['messages']
+            for msg_def in state_messages:
+                if msg_def['name'] == msg_hdr:
+                    next_state = msg_def['next_state']
+                    action = msg_def['action']
+                    if action is not None:
+                        if action(msg) == False:
+                            self.log_error("Action failed for message ("
+                                          + msg_hdr + ")")
+                            return
+                    self.__set_state(next_state)
+                    return
 
-    def action(self, action_name):
+        # If we get here, we could not find this message header
+        # in any of our lists of messages.
+        self.log_error("Invalid message ("
+                        + msg_hdr + ") received in state ("
+                        + self.get_state() +")")
+
+    def action(self, action_name, arg_list=[]):
+        self.interface.do_action(action_name, arg_list)
+
+    def do_intf_action(self, action_name, arg_list=[]):
         state_actions = self.current_state['actions']
 
         # state_actions is a list of all actions we process in this
@@ -147,10 +194,29 @@ class Protocol(log.Logger):
                 self.__set_state(next_state)
                 return
 
+        # If we get here, we could not find the specified action in the
+        # list of actions for our current state.
+        # However, the action may be described in our 'all_states' entry.
+        if self.all_states is not None:
+            state_actions = self.all_states['actions']
+            for action_def in state_actions:
+                if action_def['name'] == action_name:
+                    action = action_def['action']
+                    next_state = action_def['next_state']
+                    if action is not None:
+                        self.log_debug("action: " + action_name)
+                        if action() == False:
+                            self.log_error("Action failed for action ("
+                                          + action_name + ")")
+                            return
+                    self.__set_state(next_state)
+                    return
+
         # If we get here, we could not find this action in our list
         # of actions for this state.  This is not necessarily a SW
         # error, as the state may have changed asynchronously.
-        self.log_info("Invalid action (" + action_name + ") received!")
+        self.log_info("Invalid action (" + action_name
+                      + ") received in state (" + self.get_state() + ")")
 
     def send(self, msg):
         msg_hdr = msg['message'][0]
@@ -295,6 +361,11 @@ def test1():
                                    'action':self.do_stop,
                                    'next_state':"WAIT_FOR_STOP_OK"}],
                        'messages':[]},
+                      {'name':"*",
+                       'actions':[{'name':"all_test",
+                                   'action':self.do_all_test,
+                                   'next_state':"-"}],
+                       'messages':[]},
                       {'name':"WAIT_FOR_STOP_OK",
                        'actions':[],
                        'messages':[{'name':"STOP_OK",
@@ -311,6 +382,7 @@ def test1():
                                         states)
             self.wait_for_that_ok = False
             self.value = 0
+            self.all_test_count = 0
 
         def start(self):
             self.proto.action("begin")
@@ -340,6 +412,12 @@ def test1():
             msg = {'message':["QUIT"]}
             self.proto.send(msg)
 
+        def all_test(self):
+            self.proto.action("all_test")
+
+        def do_all_test(self):
+            self.all_test_count += 1
+
         def close(self):
             self.proto.close()
 
@@ -351,10 +429,20 @@ def test1():
     assert(c.proto.get_state() == "READY")
     assert(s.proto.get_state() == "READY")
 
+    # Verify we can trigger our 'all_test' action in all states,
+    # as described in our state array.
+    c.all_test()
+    time.sleep(1)
+    assert(c.all_test_count == 1)
+
     c.run()
     time.sleep(1)
     assert(c.proto.get_state() == "RUNNING")
     assert(s.proto.get_state() == "RUNNING")
+
+    c.all_test()
+    time.sleep(1)
+    assert(c.all_test_count == 2)
 
     # Make sure we cant quit in the running state
     c.quit()
