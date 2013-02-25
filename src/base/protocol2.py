@@ -28,6 +28,8 @@ class Protocol(log.Logger):
         assert(isinstance(states, types.ListType))
 
         log.Logger.__init__(self)
+        self.__verify_states(states)
+
         self.log_level = "D"
 
         self.stats = Protocol.Stats()
@@ -52,6 +54,67 @@ class Protocol(log.Logger):
                      + str(len(messages)) + " messages, "
                      + str(len(states)) + " states.")
 
+    def __verify_states(self, states):
+        # Parse through the state list and ensure all states
+        # are represented (no type-o's)
+        state_names = []
+        state_entries = []
+        for state in states:
+            state_names.append(state['name'])
+            state_entries.append(0)
+
+        # Now that we have every state name in our list,
+        # go through each state in more detail and verify
+        # each state's message and action 'next_state' variable
+        # is real.
+        for i, state in enumerate(states):
+            if state['name'] == "*":
+                continue
+            for action in state['actions']:
+                if action['next_state'] == "-":
+                    continue
+                if action['next_state'] not in state_names:
+                    self.log_error("State: " + state['name']
+                                  + " action: " + action['name']
+                                  + " next_state ("
+                                  + action['next_state']
+                                  + ") is not a valid state!")
+                    assert(False)
+                else:
+                    # State is valid.  Increment the state_entries[]
+                    # value for this state, indicating there is at least
+                    # 1 way into this state.
+                    state_entries[i] += 1
+
+            for message in state['messages']:
+                if message['next_state'] == "-":
+                    continue
+                if message['next_state'] not in state_names:
+                    self.log_error("State: " + state['name']
+                                  + " message: " + message['name']
+                                  + " next_state ("
+                                  + message['next_state']
+                                  + ") is not a valid state!")
+                    assert(False)
+                else:
+                    # State is valid.  Increment the state_entries[]
+                    # value for this state, indicating there is at least
+                    # 1 way into this state.
+                    state_entries[i] += 1
+
+        # Loop through each state_entry and verify it is non-zero.
+        # A zero entry means there are no programmed ways into the
+        # specified state.
+        # We ignore the first state, as this is sometimes just the
+        # 'INIT' state and the only way in is at program start.
+        for i, entry in enumerate(state_entries):
+            if i == 0:
+                continue
+            if entry == 0 and state_names[i] != "*":
+                self.log_error("State: " + state_names[i]
+                              + " has no entry points!")
+                assert(False)
+
     def get_state(self):
         return self.current_state['name']
 
@@ -70,6 +133,9 @@ class Protocol(log.Logger):
                 self.current_state = state
                 return
         self.bug("Cannot find state (" + state_name + ")")
+
+        # If there is a timeout specified for this state,
+        # activate the timer now.
 
     def __find_msg(self, msg_hdr):
         for msg in self.messages:

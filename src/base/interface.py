@@ -17,7 +17,7 @@ class Interface(object):
 
     """
     """
-    def __init__(self, rx_cback=None, action_cback=None):
+    def __init__(self, rx_cback=None, action_cback=None, timer_cback=None):
 
         self.ctx = zmq.Context.instance()
         self.in_pipe = zsocket.zpipe()
@@ -28,6 +28,9 @@ class Interface(object):
         self.sockets = []
         self.rx_cback = rx_cback
         self.action_cback = action_cback
+        self.timer_cback = timer_cback
+        self.sys_timer = None
+        self.timers = []
 
         self.thread = threading.Thread(target=self.__thread_entry)
         self.thread.daemon = True
@@ -39,6 +42,32 @@ class Interface(object):
             Llog.LogError("Interface not closed properly!")
             assert(False)
 
+    def add_timer(self, name, duration):
+        # Ensure this timer name is unique in our list, then
+        # add it.
+        assert(self.timer_cback is not None)
+        for timer in self.timers:
+            if timer['name'] == name:
+                Llog.Bug("Timer: " + name + " already exists!")
+        t = threading.Timer(duration, self.do_sys_timeout, {name})
+        self.timers.append({'name':name, 'duration':duration, 'timer':t})
+        t.start()
+
+    def do_sys_timeout(self, timer_args):
+        # We need to process the timer in our interface thread.
+        # Post a 'TIMER' message to our queue to move processing
+        # to the interface thread.
+        self.__push_in_msg_raw({'message':["INTF_TIMER", timer_args[0]]})
+ 
+    def __process_timers(self, timer_name):
+        for i, timer in enumerate(self.timers):
+            if timer['name'] == timer_name:
+                timer['timer'] = None
+                self.timers.remove(i)
+                self.timer_cback(timer_name)
+                return
+        Llog.LogInfo("Unknown timer (" + timer_name + ") received!")
+                
     def add_socket(self, zskt):
         assert(zskt is not None)
         assert(zskt not in self.sockets)
@@ -188,6 +217,10 @@ class Interface(object):
                     action_args = []
                 self.action_cback(action_name, action_args)
             return
+        elif msg_list[0] == "INTF_TIMER":
+            # A timer has fired.  Process it...
+            self.__process_timers(msg_list[1])
+            return
         else:
             # Check to verify we have 1, and only 1 socket.
             # We support multiple sockets, so it gets a bit
@@ -257,5 +290,44 @@ def test1():
     print "PASSED"
 
 
+def test2():
+
+    class MyServer():
+        def __init__(self, name):
+            self.name = name
+            self.interface = Interface(action_cback=self.process_action,
+                                       timer_cback=self.process_timer)
+            self.action_args = None
+            self.action_name = ""
+            self.timer_name = ""
+
+        def process_action(self, action_name, action_args):
+            Llog.LogInfo("Got my action!")
+            self.got_action = True
+            self.action_name = action_name
+            self.action_args = action_args
+
+        def process_timer(self, timer_name):
+            Llog.LogInfo("Got my timer! " + timer_name)
+            self.got_timer = True
+            self.timer_name = timer_name
+
+    s = MyServer("test2-server")
+    s.interface.do_action("myaction", ["myarg1"])
+    time.sleep(1)
+    assert(s.got_action is True)
+    assert(s.action_name == "myaction")
+    assert(s.action_args[0] == "myarg1")
+
+    s.interface.add_timer("mytimer1", 1)
+    time.sleep(3)
+    assert(s.got_timer is True)
+    assert(s.timer_name == "mytimer1")
+
+    s.interface.close()
+    print "PASSED"
+
+
 if __name__ == '__main__':
-    test1()
+    #test1()
+    test2()

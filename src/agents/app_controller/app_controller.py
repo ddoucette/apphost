@@ -17,11 +17,11 @@ class AppControlProtocol(object):
              The server can be either empty, as in just started up,
              or loaded, with a valid application file or
              running, with the specified application file and md5.
-         client <---  HI <major><minor><state><file_name><md5> <--- server
+         client <---  HI <major,minor,state,file_name,md5,label> <--- server
                          or
          client <---  ERROR <reason>          <--- server
 
-         client --->  LOAD <file_name,md5> ---> server
+         client --->  LOAD <file_name,md5,label> ---> server
          client --->  CHUNK <is_last>  ---> server
          client --->  CHUNK <is_last>  ---> server
          client --->  CHUNK <is_last>  ---> server
@@ -29,7 +29,7 @@ class AppControlProtocol(object):
          client --->  CHUNK <is_last>  ---> server
          client --->  CHUNK <is_last>  ---> server
          client --->  CHUNK <is_last=true>  ---> server
-         client <---  LOAD_OK <file_name,md5>    <--- server
+         client <---  LOAD_OK <file_name,md5,label> <--- server
              All bytes have been received.  The server now 
              acknowledges the presense of the original file.
 
@@ -66,14 +66,20 @@ class AppControlProtocol(object):
                           {'name':'file_name', \
                            'type':types.StringType}, \
                           {'name':'md5sum', \
+                           'type':types.StringType}, \
+                          {'name':'label', \
                            'type':types.StringType}]}, \
                   {'LOAD': [{'name':'file_name', \
                              'type':types.StringType}, \
                             {'name':'md5sum', \
+                             'type':types.StringType}, \
+                            {'name':'label', \
                              'type':types.StringType}]}, \
                   {'LOAD_OK': [{'name':'file_name', \
                                 'type':types.StringType}, \
                                {'name':'md5sum', \
+                                'type':types.StringType}, \
+                               {'name':'label', \
                                 'type':types.StringType}]}, \
                   {'CHUNK': [{'name':'is last', \
                               'type':types.BooleanType}, \
@@ -322,17 +328,23 @@ class AppControlProtocolClient(object):
                                 'next_state':"LOADED"},
                                {'name':"EVENT",
                                 'action':self.do_event,
-                                'next_state':"-"}]},
+                                'next_state':"RUNNING"}]},
+                  {'name':"ERROR",
+                   'actions':[],
+                   'messages':[]},
+                  {'name':"DONE",
+                   'actions':[],
+                   'messages':[]},
                   {'name':"*",
                    'actions':[{'name':"error",
                                'action':self.do_error,
-                               'next_state':"-"},
+                               'next_state':"ERROR"},
                               {'name':"quit",
                                'action':self.do_quit,
-                               'next_state':"-"}],
+                               'next_state':"DONE"}],
                    'messages':[{'name':"QUIT",
                                 'action':self.do_quit,
-                                'next_state':"-"}]}]
+                                'next_state':"DONE"}]}]
 
         location_descriptor = {'type':zmq.ROUTER,
                                'protocol':"tcp",
@@ -347,6 +359,7 @@ class AppControlProtocolClient(object):
         self.state = "INIT"
         self.file_name = ""
         self.md5sum = ""
+        self.label = ""
         self.f = None
         self.alive = True
         self.chunks_outstanding = 0
