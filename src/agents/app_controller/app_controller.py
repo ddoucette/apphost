@@ -106,7 +106,9 @@ class AppControlProtocolServer(object):
 
     def __init__(self, user_name):
         states = [{'name':"READY",
-                   'actions':[],
+                   'actions':[{'name':"load_complete",
+                               'action':self.do_load_complete,
+                               'next_state':"LOADED"}],
                    'messages':[{'name':"LOAD",
                                 'action':self.do_load,
                                 'next_state':"LOADING"}],
@@ -181,7 +183,7 @@ class AppControlProtocolServer(object):
         self.client_version_minor = version_minor
 
         state = self.proto.get_state()
-        if self.file_name = "":
+        if self.file_name == "":
             file_name = "-"
             md5sum = "-"
         else:
@@ -193,8 +195,7 @@ class AppControlProtocolServer(object):
                     self.version_minor,
                     state,
                     file_name,
-                    md5sum
-                    ]
+                    md5sum]
         msg['message'] = msg_list
         self.proto.send(msg)
 
@@ -202,104 +203,75 @@ class AppControlProtocolServer(object):
         self.file_name = msg['message'][1]
         self.md5sum = msg['message'][2]
 
+        # Check to see if we already have the file.
+        # If the md5sum fails below, or is different, we hav
+        # our answer.
+        md5sum = zhelpers.md5sum(self.file_name)
+        if md5sum is not None and md5sum == self.md5sum:
+            # We have this file already.  Issue the load_complete action.
+            self.proto.action("load_complete", [msg['address']])
+        else:
+            # Open the file for writting.  We should soon be
+            # receiving chunks of file data for this file.
+            self.__create_file()
+
+    def do_load_complete(self, action, action_args):
+        msg = {'address':action_args[0],
+               'message':["LOAD_OK", self.file_name, self.md5sum]}
+        self.proto.send(msg)
+
     def do_chunk(self, msg):
         is_last = msg['message'][1]
         data_block = msg['message'][2]
 
-        if self.state == "INIT":
-            self.__reset()
-            self.__create_file()
-            if self.f is not None:
-                self.state = "LOADING"
-            else:
-                # Could not create/open the file
-                msg_list = ["ERROR", "Could not open file: " + self.file_name]
-                msg['message'] = msg_list
-                self.proto.send(msg)
-                return
-        elif self.state == "LOADING":
-            pass
-        else:
-            # Problem!  We should only receive chunks in INIT or
-            # LOADING.  Reset and return to INIT.
-            self.__reset()
-            self.state = "INIT"
-            msg_list = ["ERROR", "Invalid state: " + self.state]
-            msg['message'] = msg_list
-            self.proto.send(msg)
-            return
-
         self.__write_file(data_block)
-        msg_list = ["CHUNK", "ok"]
-        if is_last == "true":
-            self.__close_file(data_block)
-            md5sum = self.__calc_md5sum()
-            msg_list.append(md5sum)
-            self.state = "LOADED"
-
+        msg_list = ["CHUNK_OK"]
         msg['message'] = msg_list
         self.proto.send(msg)
 
+        if is_last == "true":
+            # Close the file and check the md5.  It should match
+            # the md5 specified at the start of loading by
+            # the client.  If not, error out.
+            self.__close_file(data_block)
+            md5sum = zhelpers.md5sum(self.file_name)
+            assert(md5sum is not None)
+            if md5sum != self.md5sum:
+                self.log_error("File does not match md5sum specified!")
+                self.proto.action("error")
+                return
+
+            # File is done.  Issue the load complete action.
+            self.proto.action("load_complete")
+
     def do_run(self, msg):
         command = msg['message'][1]
-
-        if self.state != "LOADED":
-            msg_list = ["ERROR", "Invalid state: " + self.state]
-        else:
-            Llog.LogInfo("Executing: " + self.file_name + " " + command)
-            self.state = "RUNNING"
-            msg_list = ["RUNNING"]
-            # XXX do JavaAppExec
-
+        msg_list = ["RUN_OK"]
         msg['message'] = msg_list
         self.proto.send(msg)
 
     def do_stop(self, msg):
-        if self.state != "RUNNING":
-            msg_list = ["ERROR", "Invalid state: " + self.state]
-        else:
-            Llog.LogInfo("Stopping: " + self.file_name)
-            self.state = "LOADED"
-            msg_list = ["STOPPED"]
-            # XXX do JavaAppExec
+        command = msg['message'][1]
+        msg_list = ["RUN_OK"]
         msg['message'] = msg_list
         self.proto.send(msg)
-
-    def do_done(self, msg):
-        msg_list = ["DONE"]
-        msg['message'] = msg_list
-        self.proto.send(msg)
-        # The top-level application thread will/should be monitoring
-        # our alive state.  Seeing 'False' should cause this
-        # server application to close.
-        self.alive = False
 
     def __create_file(self):
+        if self.f is not None:
+            self.f.close()
         try:
             self.f = open(self.file_name, "w+")
         except:
             Llog.LogError("Cannot open " + self.file_name + " for writting!")
 
-    def __reset(self):
-        if self.f is not None:
-            self.f.close()
-            self.f = None
-        self.state = "INIT"
-        self.file_name = ""
-        self.md5sum = ""
-
-    def __write_file(self, data_block):
+    def __write_chunk(self, data_block):
         assert(self.f is not None)
-        f.write(data_block)
+        self.f.write(data_block)
 
     def __close_file(self):
         assert(self.f is not None)
-        f.close()
+        self.f.close()
         self.f = None
-
-    def __calc_md5sum(self):
-        assert(self.f != "")
-        return zhelpers.md5sum(self.file_name)
 
 
 class AppControlProtocolClient(object):
@@ -307,113 +279,128 @@ class AppControlProtocolClient(object):
         For a description of the protocol, see AppControlProtocol
         above.
     """
-    states = ["INIT", "LOADING", "CHUNKING", "LOADED", "RUNNING"]
     max_chunks_outstanding = 5
     chunksize = 1000
 
-    def __init__(self, address, port):
-        location_descriptor = {'name':"appctl",
-                               'type':zmq.ROUTER,
+    def __init__(self, user_name, address, port):
+        states = [{'name':"INIT",
+                   'actions':[{'name':"say_howdy",
+                               'action':self.a_say_howdy,
+                               'next_state':"INIT"},
+                              {'name':"is_running",
+                               'action':None,
+                               'next_state':"RUNNING"},
+                              {'name':"is_loaded",
+                               'action':None,
+                               'next_state':"LOADED"},
+                              {'name':"start_loading",
+                               'action':self.a_start_loading,
+                               'next_state':"LOADING"}],
+                   'messages':[{'name':"HI",
+                                'action':self.do_hi,
+                                'next_state':"-"}],
+                  {'name':"LOADING",
+                   'actions':[{'name':"load_ok",
+                               'action':None,
+                               'next_state':"LOADED"}],
+                   'messages':[{'name':"CHUNK",
+                                'action':self.do_chunk,
+                                'next_state':"LOADING"}]},
+                  {'name':"LOADED",
+                   'actions':[{'name':"run",
+                               'action':self.do_run,
+                               'next_state':"-"}],
+                   'messages':[{'name':"RUN_OK",
+                                'action':,
+                                'next_state':"RUNNING"}],
+                  {'name':"RUNNING",
+                   'actions':[{'name':"stop",
+                               'action':self.do_stop,
+                               'next_state':"-"}],
+                   'messages':[{'name':"STOP_OK",
+                                'action':None,
+                                'next_state':"LOADED"},
+                               {'name':"EVENT",
+                                'action':self.do_event,
+                                'next_state':"-"}]},
+                  {'name':"*",
+                   'actions':[{'name':"error",
+                               'action':self.do_error,
+                               'next_state':"-"},
+                              {'name':"quit",
+                               'action':self.do_quit,
+                               'next_state':"-"}],
+                   'messages':[{'name':"QUIT",
+                                'action':self.do_quit,
+                                'next_state':"-"}]}]
+
+        location_descriptor = {'type':zmq.ROUTER,
                                'protocol':"tcp",
                                'address':address,
                                'port':port}
-        protocol_descriptor = {'HELLO':(2,4,self.do_hello),
-                               'LOAD':(2,3,self.do_load),
-                               'CHUNK':(2,3,self.do_chunk),
-                               'RUNNING':(1,1,self.do_running),
-                               'STOPPED':(1,1,self.do_stopped),
-                               'FINISHED':(1,1,self.do_finished)}
         self.proto = protocol.ProtocolClient(
-                                    location_descriptor,
-                                    protocol_descriptor)
+                                    "app-ctrl",
+                                    location,
+                                    AppControlProtocol.messages,
+                                    states)
+        self.user_name = user_name
         self.state = "INIT"
         self.file_name = ""
         self.md5sum = ""
         self.f = None
         self.alive = True
         self.chunks_outstanding = 0
-        self.hello()
+        self.say_howdy()
 
-    def hello(self):
-        # Send hello message to the server
-        Llog.LogInfo("Sending a HELLO")
-        self.proto.send({'message':["HELLO"]})
+    def a_say_howdy(self, action_args):
+        msg_list = ["HOWDY",
+                    self.user_name,
+                    self.version_major,
+                    self.version_minor]
+        msg['message'] = msg_list
+        self.proto.send(msg)
 
-    def load(self, file_name):
-        if self.state != "INIT":
-            Llog.LogError("Cannot load file: "
-                           + file_name + " in state " + self.state)
-            return
+    def a_start_loading(self, action_args):
+        self.file_name = action_args[0]
 
-        md5sum = zhelpers.md5sum(file_name)
-        if md5sum is None:
-            Llog.LogError("Cannot find file: " + file_name)
-            return
+        # Open the file, compute the md5, then send the first chunk
+        # to get the ball rolling.
+        if self.f is not None:
+            self.f.close()
+            self.f = None
 
-        # Send a LOAD message to the server for this file.  The
-        # server may already have a copy.
-        self.file_name = file_name
-        self.md5sum = md5sum
-        self.state = "LOADING"
-        self.proto.send({'message':["LOAD", file_name, md5sum]})
+        try:
+            self.f = open(self.file_name, "rb")
+            assert(self.f is not None)
+        except:
+            Llog.LogError("Cannot open " + self.file_name + " for reading!")
+        self.chunks_outstanding = 0
+        self.__send_file_chunks()
+
+    def do_hi(self, msg):
+        msg_list = msg{'message'}
+        version_major = msg_list[0]
+        version_minor = msg_list[1]
+        state = msg_list[2]
+        file_name = msg_list[3]
+        md5sum = msg_list[4]
+
+        if version_major != self.version_major:
+            self.error("Invalid major version: (" + version_major + ")")
 
     def run(self, command):
-        if self.state != "LOADED":
-            Llog.LogError("Cannot run application: "
-                           + self.file_name + " in state " + self.state)
-            return
-        self.proto.send({'message':["RUN", command]})
+        pass
 
     def stop(self):
-        if self.state != "LOADED" and self.state != "RUNNING":
-            Llog.LogError("Cannot stop application: "
-                           + self.file_name + " in state " + self.state)
-            return
-        self.proto.send({'message':["STOP"]})
+        pass
 
     def quit(self):
-        self.proto.send({'message':["QUIT"]})
+        pass
 
     def do_hello(self, msg):
-        # Callback for a hello message
-        msg_list = msg['message']
-        if msg_list[1] == "ready":
-            # The server is ready to receive our application file
-            pass
-        elif msg_list[1] == "loaded":
-            self.file_name = msg_list[2]
-            self.md5sum = msg_list[3]
-            self.state = "LOADED"
-        elif msg_list[1] == "running":
-            self.file_name = msg_list[2]
-            self.md5sum = msg_list[3]
-            self.state = "RUNNING"
-        else:
-            Llog.LogError("Invalid server state: "
-                          + msg_list[1] + " received in HELLO message!")
-            self.state = "ERROR"
-        Llog.LogInfo("Received hello response! " + msg_list[1])
+        pass
 
     def do_load(self, msg):
-        if self.state != "LOADING":
-            Llog.LogError("Received LOAD message in state: " + self.state)
-            return
-
-        msg_list = msg['message']
-        if msg_list[1] == self.file_name:
-            # The file is present on the server.
-            if msg_list[2] != self.md5sum:
-                Llog.LogError("Server file ("
-                              + self.file_name
-                              + ") has an invalid md5sum: "
-                              + msg_list[2]
-                              + " The md5sum should be: "
-                              + self.md5sum)
-                self.state = "ERROR"
-                return
-            self.state = "LOADED"
-            return
-
         # The server does not have our file present.  Lets begin to
         # chunk-copy the file over
         assert(self.f is None)
@@ -452,23 +439,13 @@ class AppControlProtocolClient(object):
             self.state = "ERROR"
 
     def do_running(self, msg):
-        if self.state != "LOADED":
-            Llog.LogError("Received RUNNING message in state: " + self.state)
-            return
-        self.state = "RUNNING"
+        pass
 
     def do_stopped(self, msg):
-        if self.state != "RUNNING":
-            Llog.LogError("Received STOPPED message in state: " + self.state)
-            return
-        self.state = "LOADED"
+        pass
 
     def do_finished(self, msg):
-        if self.state != "RUNNING":
-            Llog.LogError("Received FINISHED message in state: " + self.state)
-            return
-        self.return_code = msg['message'][1]
-        self.state = "LOADED"
+        pass
 
     def __send_file_chunks(self):
         assert(self.f is not None)
