@@ -55,66 +55,45 @@ class Protocol(log.Logger):
                      + str(len(states)) + " states.")
 
     def __verify_states(self, states):
-        # Parse through the state list and ensure all states
-        # are represented (no type-o's)
+
         state_names = []
         state_entries = []
         for state in states:
             state_names.append(state['name'])
-            state_entries.append(0)
 
-        # Now that we have every state name in our list,
-        # go through each state in more detail and verify
-        # each state's message and action 'next_state' variable
-        # is real.
-        for i, state in enumerate(states):
+        # Parse through the state list and ensure all states
+        # are represented (no type-o's)
+        for state in states:
             if state['name'] == "*":
                 continue
+
             for action in state['actions']:
                 if action['next_state'] == "-":
                     continue
                 if action['next_state'] not in state_names:
-                    self.log_error("State: " + state['name']
+                    self.bug("State: " + state['name']
                                   + " action: " + action['name']
                                   + " next_state ("
                                   + action['next_state']
                                   + ") is not a valid state!")
-                    assert(False)
-                else:
-                    # State is valid.  Increment the state_entries[]
-                    # value for this state, indicating there is at least
-                    # 1 way into this state.
-                    state_entries[i] += 1
 
             for message in state['messages']:
                 if message['next_state'] == "-":
                     continue
                 if message['next_state'] not in state_names:
-                    self.log_error("State: " + state['name']
+                    self.bug("State: " + state['name']
                                   + " message: " + message['name']
                                   + " next_state ("
                                   + message['next_state']
                                   + ") is not a valid state!")
-                    assert(False)
-                else:
-                    # State is valid.  Increment the state_entries[]
-                    # value for this state, indicating there is at least
-                    # 1 way into this state.
-                    state_entries[i] += 1
 
-        # Loop through each state_entry and verify it is non-zero.
-        # A zero entry means there are no programmed ways into the
-        # specified state.
-        # We ignore the first state, as this is sometimes just the
-        # 'INIT' state and the only way in is at program start.
-        for i, entry in enumerate(state_entries):
-            if i == 0:
-                continue
-            if entry == 0 and state_names[i] != "*":
-                self.log_error("State: " + state_names[i]
-                              + " has no entry points!")
-                assert(False)
-
+            if 'timeout' in state:
+                if state['timeout']['next_state'] not in state_names:
+                    self.bug("State: " + state['name']
+                                  + " next_state ("
+                                  + state['timeout']['next_state']
+                                  + ") is not a valid state!")
+ 
     def get_state(self):
         return self.current_state['name']
 
@@ -125,17 +104,29 @@ class Protocol(log.Logger):
         if state_name == "-":
             return
 
+        next_state = None
         # Find the state name within our list of valid states
         for state in self.states:
             if state['name'] == state_name:
-                self.log_debug("state: " + self.current_state['name']
-                              + " ==> " + state['name'])
-                self.current_state = state
-                return
-        self.bug("Cannot find state (" + state_name + ")")
+                next_state = state
+                break
 
-        # If there is a timeout specified for this state,
+        if next_state is None:
+            self.bug("Cannot find state: " + state_name)
+
+        self.log_debug("state: " + self.current_state['name']
+                              + " ==> " + next_state['name'])
+
+        # If the current state has a timeout, cancel it now.
+        if 'timeout' in self.current_state:
+            self.interface.remove_timer(self.current_state['name'])
+
+        # If there is a timeout specified for the next state,
         # activate the timer now.
+        self.current_state = state
+        if 'timeout' in self.current_state:
+            self.interface.add_timer(self.current_state['name'],
+                                     self.current_state['duration'])
 
     def __find_msg(self, msg_hdr):
         for msg in self.messages:
@@ -361,6 +352,9 @@ def test1():
                                    {'name':"QUIT",
                                     'action':self.do_quit,
                                     'next_state':"START"}]},
+                      {'name':"TIMEOUT",
+                       'actions':[],
+                       'messages':[]},
                       {'name':"RUNNING",
                        'actions':[],
                        'messages':[{'name':"STOP",
@@ -406,6 +400,9 @@ def test1():
                        'messages':[]},
                       {'name':"WAIT_FOR_HI",
                        'actions':[],
+                       'timeout':{'duration':2,
+                                  'action':self.do_timeout,
+                                  'next_state':"START"},
                        'messages':[{'name':"HI",
                                     'action':None,
                                     'next_state':"READY"}]},
@@ -431,7 +428,9 @@ def test1():
                        'actions':[{'name':"all_test",
                                    'action':self.do_all_test,
                                    'next_state':"-"}],
-                       'messages':[]},
+                       'messages':[{'name':"QUIT",
+                                    'action':None,
+                                    'next_state':"READY"}]},
                       {'name':"WAIT_FOR_STOP_OK",
                        'actions':[],
                        'messages':[{'name':"STOP_OK",
@@ -449,6 +448,7 @@ def test1():
             self.wait_for_that_ok = False
             self.value = 0
             self.all_test_count = 0
+            self.timed_out = False
 
         def start(self):
             self.proto.action("begin")
@@ -477,6 +477,10 @@ def test1():
         def do_quit(self):
             msg = {'message':["QUIT"]}
             self.proto.send(msg)
+
+        def do_timeout(self):
+            self.proto.log_info("Timed out!")
+            self.timed_out = True
 
         def all_test(self):
             self.proto.action("all_test")
@@ -526,8 +530,16 @@ def test1():
     assert(c.proto.get_state() == "START")
     assert(s.proto.get_state() == "START")
 
-    c.close()
+    # Now close the server and issue another HI message.
+    # Verify the client times out correctly.
     s.close()
+
+    c.start()
+    time.sleep(5)
+    assert(c.timed_out is True)
+    assert(c.proto.get_state() == "START")
+
+    c.close()
     print "test1() PASSED"
 
 

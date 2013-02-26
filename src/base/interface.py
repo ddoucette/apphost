@@ -49,21 +49,22 @@ class Interface(object):
         for timer in self.timers:
             if timer['name'] == name:
                 Llog.Bug("Timer: " + name + " already exists!")
-        t = threading.Timer(duration, self.do_sys_timeout, {name})
+        Llog.LogDebug("Timer: " + name);
+        t = threading.Timer(duration, self.do_sys_timeout, [name], {})
         self.timers.append({'name':name, 'duration':duration, 'timer':t})
         t.start()
 
-    def do_sys_timeout(self, timer_args):
+    def do_sys_timeout(self, timer_name):
         # We need to process the timer in our interface thread.
         # Post a 'TIMER' message to our queue to move processing
         # to the interface thread.
-        self.__push_in_msg_raw({'message':["INTF_TIMER", timer_args[0]]})
+        self.__push_in_msg_raw({'message':["INTF_TIMER", timer_name]})
  
     def __process_timers(self, timer_name):
-        for i, timer in enumerate(self.timers):
+        for timer in self.timers:
             if timer['name'] == timer_name:
                 timer['timer'] = None
-                self.timers.remove(i)
+                self.timers.remove(timer)
                 self.timer_cback(timer_name)
                 return
         Llog.LogInfo("Unknown timer (" + timer_name + ") received!")
@@ -300,6 +301,8 @@ def test2():
             self.action_args = None
             self.action_name = ""
             self.timer_name = ""
+            self.got_action = False
+            self.got_timer = False
 
         def process_action(self, action_name, action_args):
             Llog.LogInfo("Got my action!")
@@ -329,5 +332,5 @@ def test2():
 
 
 if __name__ == '__main__':
-    #test1()
+    test1()
     test2()
