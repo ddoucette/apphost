@@ -5,6 +5,7 @@ import vitals
 import protocol
 import zmq
 import zhelpers
+import types
 from local_log import *
 from override import *
 
@@ -17,6 +18,7 @@ class AppControlProtocol(object):
              The server can be either empty, as in just started up,
              or loaded, with a valid application file or
              running, with the specified application file and md5.
+             state is either READY,LOADED,RUNNING
          client <---  HI <major,minor,state,file_name,md5,label> <--- server
                          or
          client <---  ERROR <reason>          <--- server
@@ -117,11 +119,14 @@ class AppControlProtocolServer(object):
                                'next_state':"LOADED"}],
                    'messages':[{'name':"LOAD",
                                 'action':self.do_load,
-                                'next_state':"LOADING"}],
+                                'next_state':"LOADING"}]},
                   {'name':"LOADING",
                    'actions':[{'name':"load_complete",
                                'action':self.do_load_complete,
                                'next_state':"LOADED"}],
+                   'timeout':{'duration':60,
+                               'action':self.do_timeout,
+                               'next_state':"READY"},
                    'messages':[{'name':"CHUNK",
                                 'action':self.do_chunk,
                                 'next_state':"LOADING"}]},
@@ -129,7 +134,7 @@ class AppControlProtocolServer(object):
                    'actions':[],
                    'messages':[{'name':"RUN",
                                 'action':self.do_run,
-                                'next_state':"RUNNING"}],
+                                'next_state':"RUNNING"}]},
                   {'name':"RUNNING",
                    'actions':[{'name':"finished",
                                'action':self.do_finished,
@@ -139,14 +144,14 @@ class AppControlProtocolServer(object):
                                'next_state':"RUNNING"}],
                    'messages':[{'name':"STOP",
                                 'action':self.do_stop,
-                                'next_state':"LOADED"}],
+                                'next_state':"LOADED"}]},
                   {'name':"*",
                    'actions':[{'name':"error",
                                'action':self.do_error,
                                'next_state':"-"}],
                    'messages':[{'name':"QUIT",
                                 'action':self.do_quit,
-                                'next_state':"READY"},
+                                'next_state':"-"},
                                {'name':"HOWDY",
                                 'action':self.do_howdy,
                                 'next_state':"-"}]}]
@@ -204,6 +209,21 @@ class AppControlProtocolServer(object):
                     md5sum]
         msg['message'] = msg_list
         self.proto.send(msg)
+
+    def do_timeout(self, state_name):
+        Llog.LogInfo("Timeout in state: " + state_name)
+
+    def do_finished(self, msg):
+        pass
+
+    def do_event(self, msg):
+        pass
+
+    def do_error(self, msg):
+        pass
+
+    def do_quit(self, msg):
+        pass
 
     def do_load(self, msg):
         self.file_name = msg['message'][1]
@@ -293,10 +313,10 @@ class AppControlProtocolClient(object):
                    'actions':[{'name':"say_howdy",
                                'action':self.a_say_howdy,
                                'next_state':"INIT"},
-                              {'name':"is_running",
+                              {'name':"app_is_running",
                                'action':None,
                                'next_state':"RUNNING"},
-                              {'name':"is_loaded",
+                              {'name':"app_is_loaded",
                                'action':None,
                                'next_state':"LOADED"},
                               {'name':"start_loading",
@@ -304,11 +324,14 @@ class AppControlProtocolClient(object):
                                'next_state':"LOADING"}],
                    'messages':[{'name':"HI",
                                 'action':self.do_hi,
-                                'next_state':"-"}],
+                                'next_state':"-"}]},
                   {'name':"LOADING",
                    'actions':[{'name':"load_ok",
                                'action':None,
                                'next_state':"LOADED"}],
+                   'timeout':{'duration':60,
+                               'action':self.do_timeout,
+                               'next_state':"ERROR"},
                    'messages':[{'name':"CHUNK",
                                 'action':self.do_chunk,
                                 'next_state':"LOADING"}]},
@@ -317,8 +340,8 @@ class AppControlProtocolClient(object):
                                'action':self.do_run,
                                'next_state':"-"}],
                    'messages':[{'name':"RUN_OK",
-                                'action':,
-                                'next_state':"RUNNING"}],
+                                'action':None,
+                                'next_state':"RUNNING"}]},
                   {'name':"RUNNING",
                    'actions':[{'name':"stop",
                                'action':self.do_stop,
@@ -376,7 +399,7 @@ class AppControlProtocolClient(object):
     def a_start_loading(self, action_args):
         self.file_name = action_args[0]
 
-        # Open the file, compute the md5, then send the first chunk
+        # Open the file, compute the md5, then send the first chunk(s)
         # to get the ball rolling.
         if self.f is not None:
             self.f.close()
@@ -391,15 +414,28 @@ class AppControlProtocolClient(object):
         self.__send_file_chunks()
 
     def do_hi(self, msg):
-        msg_list = msg{'message'}
+        msg_list = msg['message']
         version_major = msg_list[0]
         version_minor = msg_list[1]
         state = msg_list[2]
         file_name = msg_list[3]
         md5sum = msg_list[4]
+        label = msg_list[5]
 
         if version_major != self.version_major:
             self.error("Invalid major version: (" + version_major + ")")
+            return
+
+        # The server state can be either READY|LOADED|RUNNING
+        if state != 'READY':
+            self.file_name = file_name
+            self.md5sum = md5sum
+            self.label = label
+
+        if state == 'LOADED':
+            self.proto.action("app_is_loaded")
+        elif state == 'RUNNING':
+            self.proto.action("app_is_running")
 
     def run(self, command):
         pass
@@ -425,6 +461,9 @@ class AppControlProtocolClient(object):
         self.chunks_outstanding = 0
         self.state = "CHUNKING"
         self.__send_file_chunks()
+
+    def do_timeout(self, state_name):
+        Llog.LogInfo("Timeout in state: " + state_name)
 
     def do_chunk(self, msg):
         if self.state != "CHUNKING":
@@ -457,9 +496,6 @@ class AppControlProtocolClient(object):
     def do_stopped(self, msg):
         pass
 
-    def do_finished(self, msg):
-        pass
-
     def __send_file_chunks(self):
         assert(self.f is not None)
         while self.chunks_outstanding < self.max_chunks_outstanding:
@@ -489,11 +525,12 @@ class AppControlProtocolClient(object):
 def test1():
 
     Llog.SetLevel("I")
-    s = AppControlProtocolServer()
-    c = AppControlProtocolClient("127.0.0.1", 8100)
+    user_name = "sysadmin"
+    s = AppControlProtocolServer(user_name)
+    c = AppControlProtocolClient(user_name, "127.0.0.1", 8100)
 
     time.sleep(1)
-    assert(c.state == "INIT")
+    assert(c.state == "READY")
     c.load("testfile.bin")
     time.sleep(5)
     assert(c.state == "LOADED")

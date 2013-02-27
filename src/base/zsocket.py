@@ -122,6 +122,8 @@ class ZSocket(log.Logger):
                 self.socket.hwm = hwm
         else:
             self.socket = self.zmq_ctx.socket(self.socket_type)
+            # Shutdown immediately, dont wait for all packets to be sent.
+            self.socket.setsockopt(zmq.LINGER, 0)
             assert(self.socket is not None)
 
         if self.socket_type == zmq.ROUTER:

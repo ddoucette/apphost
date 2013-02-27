@@ -49,10 +49,19 @@ class Interface(object):
         for timer in self.timers:
             if timer['name'] == name:
                 Llog.Bug("Timer: " + name + " already exists!")
-        Llog.LogDebug("Timer: " + name);
+
+        Llog.LogDebug("Added timer: " + name);
         t = threading.Timer(duration, self.do_sys_timeout, [name], {})
         self.timers.append({'name':name, 'duration':duration, 'timer':t})
         t.start()
+
+    def remove_timer(self, name):
+        for timer in self.timers:
+            if timer['name'] == name:
+                timer['timer'].cancel()
+                timer['timer'] = None
+                self.timers.remove(timer)
+                return
 
     def do_sys_timeout(self, timer_name):
         # We need to process the timer in our interface thread.
@@ -118,6 +127,12 @@ class Interface(object):
 
     def close(self):
         self.closed = True
+
+        # Cancel all running timers
+        for timer in self.timers:
+            timer['timer'].cancel()
+            timer['timer'] = None
+
         for zsocket in self.sockets[:]:
             self.remove_socket(zsocket)
 

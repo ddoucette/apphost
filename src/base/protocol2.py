@@ -48,12 +48,31 @@ class Protocol(log.Logger):
                 self.all_states = state
                 break
 
-        self.interface = interface.Interface(self.__rx_msg, self.do_intf_action)
+        self.interface = interface.Interface(self.__rx_msg,
+                                             self.__intf_action,
+                                             self.__timer_cback)
 
         self.log_info("Created protocol (" + name + ") "
                      + str(len(messages)) + " messages, "
                      + str(len(states)) + " states.")
 
+    def __timer_cback(self, timer_name):
+        # A state timer has fired.  Timers are named using
+        # the state name, so make sure the timer name matches
+        # the current state.  We may have just changed states
+        # and the timer was delivered a bit late.
+        if self.current_state['name'] != timer_name:
+            self.log_info("Late timer (" + timer_name
+                          + ").  Current state ("
+                          + self.current_state['name'] + ")")
+            return
+        # Deliver the timeout action for this state.
+        timeout_action = self.current_state['timeout']['action']
+        if timeout_action is not None:
+            timeout_action(timer_name)
+
+        self.__set_state(self.current_state['timeout']['next_state'])
+        
     def __verify_states(self, states):
 
         state_names = []
@@ -121,12 +140,12 @@ class Protocol(log.Logger):
         if 'timeout' in self.current_state:
             self.interface.remove_timer(self.current_state['name'])
 
+        self.current_state = state
         # If there is a timeout specified for the next state,
         # activate the timer now.
-        self.current_state = state
         if 'timeout' in self.current_state:
             self.interface.add_timer(self.current_state['name'],
-                                     self.current_state['duration'])
+                                     self.current_state['timeout']['duration'])
 
     def __find_msg(self, msg_hdr):
         for msg in self.messages:
@@ -233,7 +252,7 @@ class Protocol(log.Logger):
     def action(self, action_name, arg_list=[]):
         self.interface.do_action(action_name, arg_list)
 
-    def do_intf_action(self, action_name, arg_list=[]):
+    def __intf_action(self, action_name, arg_list=[]):
         state_actions = self.current_state['actions']
 
         # state_actions is a list of all actions we process in this
@@ -478,8 +497,8 @@ def test1():
             msg = {'message':["QUIT"]}
             self.proto.send(msg)
 
-        def do_timeout(self):
-            self.proto.log_info("Timed out!")
+        def do_timeout(self, state_name):
+            self.proto.log_info("Timed out in state " + state_name + "!")
             self.timed_out = True
 
         def all_test(self):
