@@ -4,17 +4,18 @@ import protocol
 import zmq
 import zhelpers
 import types
+import log
 import app_controller_protocol
-from local_log import *
-from override import *
 
 
-class AppControlServer(object):
+class AppControlServer(log.Logger):
 
     version_major = 1
     version_minor = 0
 
     def __init__(self, user_name):
+        log.Logger.__init__(self)
+
         states = [{'name':"READY",
                    'actions':[],
                    'messages':[{'name':"LOAD",
@@ -92,11 +93,11 @@ class AppControlServer(object):
         version_minor = msg_list[3]
 
         if self.user_name != user_name:
-            self.send_error("Invalid user name specified!")
+            self.__send_error("Invalid user name specified!")
             return
 
         if self.version_major != version_major:
-            self.send_error("Invalid major version!  Version ("
+            self.__send_error("Invalid major version!  Version ("
                             + self.version_major + ") supported!")
             return
 
@@ -110,11 +111,10 @@ class AppControlServer(object):
                     self.file_name,
                     self.md5sum,
                     self.label]
-        msg['message'] = msg_list
-        self.proto.send(msg)
+        self.proto.send({'message': msg_list})
 
     def t_timeout(self, state_name):
-        Llog.LogInfo("Timeout in state: " + state_name)
+        self.log_info("Timeout in state: " + state_name)
 
     def a_finished(self, action_name, action_args):
         pass
@@ -138,6 +138,7 @@ class AppControlServer(object):
     def m_load(self, msg):
         self.file_name = msg['message'][1]
         self.md5sum = msg['message'][2]
+        self.label = msg['message'][3]
 
         # Check to see if we already have the file.
         # If the md5sum fails below, or is different, we have
@@ -145,14 +146,20 @@ class AppControlServer(object):
         md5sum = zhelpers.md5sum(self.file_name)
         if md5sum is not None and md5sum == self.md5sum:
             # We have this file already.  Issue the load_complete action.
+            # This will then send the LOAD_OK message.
             self.proto.action("load_complete")
         else:
             # Open the file for writting.  We should soon be
             # receiving chunks of file data for this file.
-            self.__create_file()
+            if self.__create_file() is True:
+                msg = {'message':["LOAD_READY", self.file_name, self.md5sum]}
+                self.proto.send(msg)
+            else:
+                self.__send_error("Cannot open (" + self.file_name
+                                  + ") for writting!")
 
     def a_load_complete(self, action_name, action_args):
-        msg = {'message':["LOAD_OK", self.file_name, self.md5sum]}
+        msg = {'message':["LOAD_OK", self.file_name, self.md5sum, self.label]}
         self.proto.send(msg)
 
     def m_chunk(self, msg):
@@ -172,9 +179,7 @@ class AppControlServer(object):
             md5sum = zhelpers.md5sum(self.file_name)
             assert(md5sum is not None)
             if md5sum != self.md5sum:
-                self.log_error("File does not match md5sum specified!")
-                self.proto.action("error",
-                                  "File does not match md5sum specified!")
+                self.__error("File does not match md5sum specified!")
                 return
 
             # File is done.  Issue the load complete action.
@@ -190,17 +195,16 @@ class AppControlServer(object):
         self.proto.send(msg)
 
     def m_stop(self, msg):
-        command = msg['message'][1]
-        msg_list = ["STOP_OK"]
-        msg['message'] = msg_list
-        self.proto.send(msg)
+        self.proto.send({'message':["STOP_OK"]})
 
     def __create_file(self):
         self.__close_file()
         try:
             self.f = open(self.file_name, "w+")
+            return True
         except:
-            Llog.LogError("Cannot open " + self.file_name + " for writting!")
+            self.log_error("Cannot open " + self.file_name + " for writting!")
+            return False
 
     def __write_chunk(self, data_block):
         assert(self.f is not None)
@@ -210,6 +214,12 @@ class AppControlServer(object):
         if self.f is not None:
             self.f.close()
             self.f = None
+
+    def __send_error(self, error_message):
+        self.proto.send({'message':["ERROR", error_message]})
+
+    def __error(self, error_message):
+        self.proto.action("error", [error_message])
 
     def close(self):
         self.__close_file()

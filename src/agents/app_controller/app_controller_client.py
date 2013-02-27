@@ -35,9 +35,6 @@ class AppControlClient(log.Logger):
                               {'name':"start_loading",
                                'action':self.a_start_loading,
                                'next_state':"LOADING"}],
-                   'timeout':{'duration':5,
-                               'action':self.t_timeout,
-                               'next_state':"ERROR"},
                    'messages':[{'name':"HI",
                                 'action':self.m_hi,
                                 'next_state':"-"}]},
@@ -53,7 +50,10 @@ class AppControlClient(log.Logger):
                                 'next_state':"LOADING"},
                                {'name':"LOAD_OK",
                                 'action':self.m_load_ok,
-                                'next_state':"LOADED"}]},
+                                'next_state':"LOADED"},
+                               {'name':"LOAD_READY",
+                                'action':self.m_start_chunking,
+                                'next_state':"-"}]},
                   {'name':"LOADED",
                    'actions':[{'name':"run",
                                'action':self.a_run,
@@ -97,7 +97,6 @@ class AppControlClient(log.Logger):
                             app_controller_protocol.AppControlProtocol.messages,
                             states)
         self.user_name = user_name
-        self.state = "INIT"
         self.file_name = ""
         self.md5sum = ""
         self.label = ""
@@ -110,14 +109,17 @@ class AppControlClient(log.Logger):
     def say_howdy(self):
         self.proto.action("say_howdy")
 
+    def load(self, file_name, label):
+        self.proto.action("start_loading", [file_name, label])
+
     def run(self, command):
-        pass
+        self.proto.action("run", [command])
 
     def stop(self):
-        pass
+        self.proto.action("stop")
 
     def quit(self):
-        pass
+        self.proto.action("quit")
 
     def error(self, msg):
         self.proto.action("error", [msg])
@@ -167,6 +169,7 @@ class AppControlClient(log.Logger):
         # and name are correct
         file_name = msg['message'][1]
         md5sum = msg['message'][2]
+        label = msg['message'][3]
         if self.file_name != file_name:
             msg = "Invalid file name received in LOAD_OK! (" + file_name + ")"
             self.error(msg)
@@ -175,6 +178,26 @@ class AppControlClient(log.Logger):
             msg = "Invalid md5 received in LOAD_OK! (" + md5sum + ")"
             self.error(msg)
             return
+        if self.label != label:
+            msg = "Invalid label received in LOAD_OK! (" + label + ")"
+            self.error(msg)
+            return
+
+    def m_start_chunking(self, msg):
+        # Open the file and send the first chunk(s) to get the ball rolling.
+        if self.f is not None:
+            self.f.close()
+            self.f = None
+
+        try:
+            self.f = open(self.file_name, "rb")
+            assert(self.f is not None)
+        except:
+            self.log_error("Cannot open " + self.file_name + " for reading!")
+            return
+
+        self.chunks_outstanding = 0
+        self.__send_file_chunks()
 
     def m_event(self, msg):
         pass
@@ -201,21 +224,24 @@ class AppControlClient(log.Logger):
         self.proto.send({'message':msg_list})
 
     def a_start_loading(self, action_name, action_args):
-        self.file_name = action_args[0]
+        file_name = action_args[0]
+        label = action_args[1]
 
-        # Open the file, compute the md5, then send the first chunk(s)
-        # to get the ball rolling.
-        if self.f is not None:
-            self.f.close()
-            self.f = None
+        md5sum = zhelpers.md5sum(file_name)
+        if md5sum is None:
+            self.log_error("Cannot find specified file: " + file_name)
+            return
 
-        try:
-            self.f = open(self.file_name, "rb")
-            assert(self.f is not None)
-        except:
-            self.log_error("Cannot open " + self.file_name + " for reading!")
-        self.chunks_outstanding = 0
-        self.__send_file_chunks()
+        self.md5sum = md5sum
+        self.file_name = file_name
+        self.label = label
+
+        # Send the load message to get the server ready to receive chunks.
+        msg_list = ["LOAD",
+                    self.file_name,
+                    self.md5sum,
+                    self.label]
+        self.proto.send({'message':msg_list})
 
     def a_error(self, action_name, action_args):
         msg = action_args[0]
@@ -249,19 +275,47 @@ class AppControlClient(log.Logger):
                 # have been detected above.
                 self.Bug("Empty chunk read!")
 
+    def get_state(self):
+        return self.proto.get_state()
+
+    def close(self):
+        if self.f is not None:
+            self.f.close()
+            self.f = None
+        self.proto.close()
+
 
 def test1():
 
     user_name = "sysadmin"
     s = app_controller_server.AppControlServer(user_name)
-    time.sleep(3)
     c = AppControlClient(user_name, "127.0.0.1", s.proto.zsocket.port)
 
-    time.sleep(10)
-    assert(c.state == "READY")
-    c.load("testfile.bin")
-    time.sleep(5)
-    assert(c.state == "LOADED")
+    time.sleep(2)
+    assert(c.get_state() == "INIT")
+
+    c.load("testfile.bin", "testapp1")
+    time.sleep(2)
+    assert(c.get_state() == "LOADED")
+
+    c.run("myapp -d this -f that")
+    time.sleep(2)
+    assert(c.get_state() == "RUNNING")
+
+    # Error, another run command in the RUNNING state.
+    c.run("myapp -d this -f that")
+    time.sleep(2)
+    assert(c.get_state() == "RUNNING")
+
+    c.stop()
+    time.sleep(2)
+    assert(c.get_state() == "LOADED")
+
+    c.quit()
+    time.sleep(2)
+    assert(c.get_state() == "DONE")
+
+    print "test1() PASSED"
 
 
 if __name__ == '__main__':

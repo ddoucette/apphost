@@ -159,7 +159,6 @@ class Protocol(log.Logger):
         # First, we make sure the message just received is actually
         # a message we understand.  (I.e. this message is in our
         # list of valid messages)
-        self.log_error("received message!")
         msg_list = msg['message']
         msg_hdr = msg_list[0]
         msg_def = self.__find_msg(msg_hdr)

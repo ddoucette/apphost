@@ -16,6 +16,7 @@ class AppControlProtocol(object):
          client <---  ERROR <reason>          <--- server
 
          client --->  LOAD <file_name,md5,label> ---> server
+         client <---  LOAD_READY <file_name,md5,label> <--- server
          client --->  CHUNK <is_last>  ---> server
          client --->  CHUNK <is_last>  ---> server
          client --->  CHUNK <is_last>  ---> server
@@ -75,6 +76,12 @@ class AppControlProtocol(object):
                                 'type':types.StringType}, \
                                {'name':'label', \
                                 'type':types.StringType}]}, \
+                  {'LOAD_READY': [{'name':'file_name', \
+                                   'type':types.StringType}, \
+                                  {'name':'md5sum', \
+                                   'type':types.StringType}, \
+                                  {'name':'label', \
+                                   'type':types.StringType}]}, \
                   {'CHUNK': [{'name':'is last', \
                               'type':types.BooleanType}, \
                              {'name':'data block', \
@@ -97,4 +104,6 @@ class AppControlProtocol(object):
                               'type':types.StringType, \
                               'min':0,
                               'max':20}]}, \
+                  {'ERROR': [{'name':'message', \
+                              'type':types.StringType}]}, \
                   {'QUIT': []}]
