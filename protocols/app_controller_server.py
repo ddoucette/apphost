@@ -1,11 +1,7 @@
 
-import projpath
-import protocol
+from apphost.base import log, protocol, zhelpers
+from apphost.protocols import app_controller_protocol
 import zmq
-import zhelpers
-import types
-import log
-import app_controller_protocol
 
 
 class AppControlServer(log.Logger):
@@ -238,4 +234,5 @@ def test1():
 
 
 if __name__ == '__main__':
+    import time
     test1()

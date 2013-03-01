@@ -1,13 +1,8 @@
 
-import projpath
-import system
-import vitals
-import protocol
+from apphost.base import log, protocol, zhelpers
+from apphost.protocols import app_controller_protocol
 import zmq
-import zhelpers
 import types
-import log
-import app_controller_protocol
 
 
 class AppControlClient(log.Logger):

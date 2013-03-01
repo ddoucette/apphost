@@ -1,0 +1,8 @@
+#!/opt/local/bin/python
+
+import sys
+import time
+from apphost.protocols import app_controller_server
+
+acs = app_controller_server.AppControlServer("thisuser")
+time.sleep(5)

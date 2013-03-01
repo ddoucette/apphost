@@ -7,17 +7,17 @@
 import threading
 import time
 import zmq
-import zhelpers
 import types
-import zsocket
-from local_log import *
+from apphost.base import zhelpers, zsocket, log
 
 
-class Interface(object):
+class Interface(log.Logger):
 
     """
     """
     def __init__(self, rx_cback=None, action_cback=None, timer_cback=None):
+
+        log.Logger.__init__(self)
 
         self.ctx = zmq.Context.instance()
         self.in_pipe = zsocket.zpipe()
@@ -39,7 +39,7 @@ class Interface(object):
     def __del__(self):
         # Ensure the caller closed this interface
         if self.closed is not True:
-            Llog.LogError("Interface not closed properly!")
+            self.log_error("Interface not closed properly!")
             assert(False)
 
     def add_timer(self, name, duration):
@@ -48,9 +48,9 @@ class Interface(object):
         assert(self.timer_cback is not None)
         for timer in self.timers:
             if timer['name'] == name:
-                Llog.Bug("Timer: " + name + " already exists!")
+                self.Bug("Timer: " + name + " already exists!")
 
-        Llog.LogDebug("Added timer: " + name);
+        self.log_debug("Added timer: " + name);
         t = threading.Timer(duration, self.do_sys_timeout, [name], {})
         self.timers.append({'name':name, 'duration':duration, 'timer':t})
         t.start()
@@ -76,7 +76,7 @@ class Interface(object):
                 self.timers.remove(timer)
                 self.timer_cback(timer_name)
                 return
-        Llog.LogInfo("Unknown timer (" + timer_name + ") received!")
+        self.log_info("Unknown timer (" + timer_name + ") received!")
                 
     def add_socket(self, zskt):
         assert(zskt is not None)
@@ -109,7 +109,7 @@ class Interface(object):
                 socket.close()
                 return
 
-        Llog.LogError("Cannot find socket: <"
+        self.log_error("Cannot find socket: <"
                       + str(zskt) + "> in registered socket list!")
         assert(False)
 
@@ -320,13 +320,13 @@ def test2():
             self.got_timer = False
 
         def process_action(self, action_name, action_args):
-            Llog.LogInfo("Got my action!")
+            self.log_info("Got my action!")
             self.got_action = True
             self.action_name = action_name
             self.action_args = action_args
 
         def process_timer(self, timer_name):
-            Llog.LogInfo("Got my timer! " + timer_name)
+            self.log_info("Got my timer! " + timer_name)
             self.got_timer = True
             self.timer_name = timer_name
 
