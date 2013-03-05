@@ -213,7 +213,7 @@ class Protocol(log.Logger):
         self.peer_alive = False
         self.interface.add_timer("keep-alive",
                                  self.current_state['keepalive']['duration'])
-        self.send({'message':["keep-alive"]})
+        self.send({'message':["keep-alive-req"]})
 
     def __find_msg(self, msg_hdr):
         for msg in self.messages:
@@ -226,9 +226,18 @@ class Protocol(log.Logger):
         msg_hdr = msg_list[0]
 
         # First, we check to see if this message is a keep-alive
-        # message.  If so, we filter it here.
-        if msg_hdr == "keep-alive":
+        # reply from the peer.  If so, process the message and
+        # drop it.  Dont forward it to the protocol implementation.
+        if msg_hdr == "keep-alive-rep":
             self.peer_alive = True
+            return None
+
+        # Check to see if this message is a request from the peer.
+        # If so, simply reply and drop this message.  Dont forward
+        # it to the protocol.  Keep-alive messages are handled
+        # here, below the user protocol.
+        if msg_hdr == "keep-alive-req":
+            self.send({'message':["keep-alive-rep"]})
             return None
 
         # We do some basic protocol checking here.
