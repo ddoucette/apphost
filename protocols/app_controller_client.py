@@ -12,16 +12,23 @@ class AppControlClient(log.Logger):
     version_major = 1
     version_minor = 0
 
-    max_chunks_outstanding = 5
-    chunksize = 1000
+    max_chunks_outstanding = 10
+    chunksize = 15000
 
     def __init__(self, user_name, address, port):
         log.Logger.__init__(self)
         states = [{'name':"INIT",
                    'actions':[{'name':"say_howdy",
                                'action':self.a_say_howdy,
-                               'next_state':"INIT"},
-                              {'name':"app_is_running",
+                               'next_state':"INIT"}],
+                   'timeout':{'duration':5,
+                              'action':self.t_init_timeout,
+                              'next_state':"-"},
+                   'messages':[{'name':"HI",
+                                'action':self.m_hi,
+                                'next_state':"READY"}]},
+                  {'name':"READY",
+                   'actions':[{'name':"app_is_running",
                                'action':None,
                                'next_state':"RUNNING"},
                               {'name':"app_is_loaded",
@@ -30,9 +37,7 @@ class AppControlClient(log.Logger):
                               {'name':"start_loading",
                                'action':self.a_start_loading,
                                'next_state':"LOADING"}],
-                   'messages':[{'name':"HI",
-                                'action':self.m_hi,
-                                'next_state':"-"}]},
+                   'messages':[]},
                   {'name':"LOADING",
                    'actions':[{'name':"load_ok",
                                'action':None,
@@ -40,8 +45,8 @@ class AppControlClient(log.Logger):
                    'timeout':{'duration':60,
                                'action':self.t_timeout,
                                'next_state':"ERROR"},
-                   'messages':[{'name':"CHUNK",
-                                'action':self.m_chunk,
+                   'messages':[{'name':"CHUNK_OK",
+                                'action':self.m_chunk_ok,
                                 'next_state':"LOADING"},
                                {'name':"LOAD_OK",
                                 'action':self.m_load_ok,
@@ -81,7 +86,10 @@ class AppControlClient(log.Logger):
                                'next_state':"DONE"}],
                    'messages':[{'name':"QUIT",
                                 'action':self.m_quit,
-                                'next_state':"DONE"}]}]
+                                'next_state':"DONE"},
+                               {'name':"ERROR",
+                                'action':self.m_error,
+                                'next_state':"ERROR"}]}]
         location = {'type':zmq.ROUTER,
                     'protocol':"tcp",
                     'address':address,
@@ -151,10 +159,16 @@ class AppControlClient(log.Logger):
         elif state == 'RUNNING':
             self.proto.action("app_is_running")
 
+    def t_init_timeout(self, state_name):
+        # We have timed out waiting for the 'HI' message from
+        # the server.  Resend.
+        self.log_info("Timeout waiting for HI message, resending...")
+        self.say_howdy()
+
     def t_timeout(self, state_name):
         self.log_info("Timeout in state: " + state_name)
 
-    def m_chunk(self, msg):
+    def m_chunk_ok(self, msg):
         # Received ACK for a chunk.  Send more chunks...
         self.chunks_outstanding -= 1
         self.__send_file_chunks()
@@ -201,6 +215,10 @@ class AppControlClient(log.Logger):
         self.error_code = int(msg['message'][1])
         self.log_info("Application finished (" + str(self.error_code) + ")")
 
+    def m_error(self, msg):
+        error_message = msg['message'][1]
+        self.log_error("Server error: (" + error_message + ")")
+
     def a_run(self, action_name, action_args):
         command = action_args[0]
         msg_list = ["RUN", command]
@@ -246,29 +264,32 @@ class AppControlClient(log.Logger):
         self.proto.send({'message':["QUIT"]})
 
     def __send_file_chunks(self):
-        assert(self.f is not None)
-        while self.chunks_outstanding < self.max_chunks_outstanding:
+
+        while self.f is not None and \
+              self.chunks_outstanding < self.max_chunks_outstanding:
             chunk = self.f.read(self.chunksize)
             if chunk != "":
                 # We have a chunk of data.  Check to see if it is
                 # the last chunk of data.  We do this by reading the next
                 # byte in the file.  If it is empty, we know we are at
                 # the end of the file.
-                last_chunk = "false"
+                last_chunk = False
                 byte = self.f.read(1)
                 if byte == "":
                     # Done.  Flag the last chunk
-                    last_chunk = "true"
+                    last_chunk = True
+                    self.f.close()
+                    self.f = None
                 else:
                     # There is still more data to read.  Put the
                     # file back to where it was.
                     self.f.seek(-1,1)
-                self.proto.send({'message':["CHUNK", last_chunk, chunk]})
+                self.proto.send({'message':["CHUNK", int(last_chunk), chunk]})
                 self.chunks_outstanding += 1
             else:
                 # Strange, we have run out of data to read.  This should
                 # have been detected above.
-                self.Bug("Empty chunk read!")
+                self.bug("Empty chunk read!")
 
     def get_state(self):
         return self.proto.get_state()

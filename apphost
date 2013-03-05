@@ -4,5 +4,12 @@ import sys
 import time
 from apphost.protocols import app_controller_server
 
-acs = app_controller_server.AppControlServer("thisuser")
-time.sleep(5)
+if len(sys.argv) != 2:
+    print "Usage: " + sys.argv[0] + " <username>"
+    exit(1)
+
+user_name = sys.argv[1]
+
+acs = app_controller_server.AppControlServer(user_name)
+while acs.alive is True:
+    time.sleep(1)

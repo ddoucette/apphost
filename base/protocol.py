@@ -19,8 +19,7 @@ class Protocol(log.Logger):
     class Stats():
         def __init__(self):
             self.rx_err_bad_header = 0
-            self.rx_err_short = 0
-            self.rx_err_long = 0
+            self.rx_err_invalid = 0
 
     def __init__(self, name, location, messages, states):
         assert(isinstance(location, types.DictType))
@@ -38,7 +37,6 @@ class Protocol(log.Logger):
         self.states = states
         self.name = name
         self.address = ""
-        self.current_state = states[0]
 
         # Within the 'states' array, there may be a description
         # which applies to 'all states'.  I.e. the state name is '*'.
@@ -53,11 +51,47 @@ class Protocol(log.Logger):
                                              self.__intf_action,
                                              self.__timer_cback)
 
+        # The first entry in the states[] list is always our
+        # first state we start at.  We need to move to this initial
+        # state using the __set_state() API, so that timers for this
+        # initial state are correctly created.
+
+        # current_state is used in the __set_state() API, so it must
+        # have a name.  We initialize it to an invalid name here to
+        # avoid a name collision with the initial state specified
+        # by the caller.
+        self.current_state = {'name':"-"}
+        self.__set_state(states[0]['name'])
+
         self.log_info("Created protocol (" + name + ") "
                      + str(len(messages)) + " messages, "
                      + str(len(states)) + " states.")
 
     def __timer_cback(self, timer_name):
+        # Check to see if this is our keepalive
+        if timer_name == "keep-alive":
+            # Yep.  First, check to see if our current state is
+            # still expecting keep-alives.  The state may have
+            # just changed and may no longer require keepalive
+            # messages
+            if 'keepalive' not in self.current_state:
+                # State has probably changed.
+                self.log_info("Keep-alive timer fired in state ("
+                              + self.current_state['name'] + ")")
+                return
+
+            # Check to see if we have received our last keep-alive
+            # message.  If not, callback to the user.
+            if self.peer_alive is False:
+                keepalive_action = self.current_state['keepalive']['action']
+                if keepalive_action is not None:
+                    keepalive_action()
+                self.__set_state(self.current_state['keepalive']['next_state'])
+            else:
+                # Send another keepalive message to the peer.
+                self.__send_keepalive()
+            return
+
         # A state timer has fired.  Timers are named using
         # the state name, so make sure the timer name matches
         # the current state.  We may have just changed states
@@ -71,7 +105,6 @@ class Protocol(log.Logger):
         timeout_action = self.current_state['timeout']['action']
         if timeout_action is not None:
             timeout_action(timer_name)
-
         self.__set_state(self.current_state['timeout']['next_state'])
         
     def __verify_states(self, states):
@@ -108,12 +141,23 @@ class Protocol(log.Logger):
                                   + ") is not a valid state!")
 
             if 'timeout' in state:
+                if state['timeout']['next_state'] == "-":
+                    continue
                 if state['timeout']['next_state'] not in state_names:
                     self.bug("State: " + state['name']
                                   + " next_state ("
                                   + state['timeout']['next_state']
                                   + ") is not a valid state!")
  
+            if 'keepalive' in state:
+                if state['keepalive']['next_state'] == "-":
+                    continue
+                if state['keepalive']['next_state'] not in state_names:
+                    self.bug("State: " + state['name']
+                                  + " next_state ("
+                                  + state['keepalive']['next_state']
+                                  + ") is not a valid state!")
+
     def get_state(self):
         return self.current_state['name']
 
@@ -122,6 +166,11 @@ class Protocol(log.Logger):
         # if the state_name == '-', this is a signal to just
         # stay in our current state.
         if state_name == "-":
+            return
+
+        # If the state_name is the same as our current state,
+        # we obviously do nothing.
+        if state_name == self.current_state['name']:
             return
 
         next_state = None
@@ -141,12 +190,30 @@ class Protocol(log.Logger):
         if 'timeout' in self.current_state:
             self.interface.remove_timer(self.current_state['name'])
 
+        # If the current state has a keepalive, cancel it now.
+        if 'keepalive' in self.current_state:
+            self.interface.remove_timer("keep-alive")
+
         self.current_state = state
         # If there is a timeout specified for the next state,
         # activate the timer now.
         if 'timeout' in self.current_state:
             self.interface.add_timer(self.current_state['name'],
                                      self.current_state['timeout']['duration'])
+
+        # If there is a keep-alive specified.  Startup the timer and
+        # send a keep-alive message.
+        if 'keepalive' in self.current_state:
+            self.__send_keepalive()
+
+    def __send_keepalive(self):
+        # Mark the peer as not alive and send the keep-alive message.
+        # If we receive the response back, we will mark the peer
+        # as alive.
+        self.peer_alive = False
+        self.interface.add_timer("keep-alive",
+                                 self.current_state['keepalive']['duration'])
+        self.send({'message':["keep-alive"]})
 
     def __find_msg(self, msg_hdr):
         for msg in self.messages:
@@ -155,12 +222,19 @@ class Protocol(log.Logger):
         return None
 
     def __rx_filter(self, msg):
+        msg_list = msg['message']
+        msg_hdr = msg_list[0]
+
+        # First, we check to see if this message is a keep-alive
+        # message.  If so, we filter it here.
+        if msg_hdr == "keep-alive":
+            self.peer_alive = True
+            return None
+
         # We do some basic protocol checking here.
         # First, we make sure the message just received is actually
         # a message we understand.  (I.e. this message is in our
         # list of valid messages)
-        msg_list = msg['message']
-        msg_hdr = msg_list[0]
         msg_def = self.__find_msg(msg_hdr)
         if msg_def is None:
             self.log_error("Invalid message header: " + msg_hdr)
@@ -186,7 +260,12 @@ class Protocol(log.Logger):
         for i, field in enumerate(fields):
             rcv_field = msg_list[i + 1]
             try:
-                field_list.append(field['type'](rcv_field))
+                # Special case for booleans.  We need to cast the
+                # 0 or 1 to an integer before casting to boolean.
+                if field['type'] == types.BooleanType:
+                    field_list.append(field['type'](types.IntType(rcv_field)))
+                else:
+                    field_list.append(field['type'](rcv_field))
             except:
                 self.log_error("Invalid field type received for field ("
                               + field['name'] + ") ("
@@ -286,6 +365,7 @@ class Protocol(log.Logger):
     def send(self, msg):
         if self.address != "":
             msg['address'] = self.address
+        self.log_debug("Sending: " + msg['message'][0])
         self.interface.push_in_msg(msg)
 
     def close(self):
@@ -303,6 +383,7 @@ class ProtocolServer(Protocol):
                                              name,
                                              location['port_range'])
         self.zsocket.bind()
+        self.log_info("Bound to port " + str(self.zsocket.port))
         self.interface.add_socket(self.zsocket)
 
 
@@ -422,6 +503,9 @@ def test1():
                                   {'name':"quit",
                                    'action':self.a_quit,
                                    'next_state':"START"}],
+                       'keepalive':{'duration':5,
+                                    'action':self.k_timeout,
+                                    'next_state':"START"},
                        'messages':[]},
                       {'name':"WAIT_FOR_RUN_OK",
                        'actions':[],
@@ -490,6 +574,9 @@ def test1():
         def a_all_test(self, action_name, action_args):
             self.all_test_count += 1
 
+        def k_timeout(self):
+            self.proto.log_info("Keepalive timer timeout!")
+
         def t_timeout(self, state_name):
             self.proto.log_info("Timed out in state " + state_name + "!")
             self.timed_out = True
@@ -552,5 +639,229 @@ def test1():
     print "test1() PASSED"
 
 
+def test2():
+
+    messages = [{'HOWDY': []}, \
+                {'HI': [{'name':'file name', \
+                         'type':types.StringType}, \
+                        {'name':'md5sum', \
+                         'type':types.StringType}]}, \
+                {'RUN': []}, \
+                {'RUN_OK': []}, \
+                {'STOP': []}, \
+                {'STOP_OK': []}, \
+                {'FINISHED': [{'name':'error code',
+                               'type':types.IntType}]}, \
+                {'QUIT': []}]
+
+    class MyProtoServer(object):
+
+        def __init__(self):
+
+            states = [{'name':"START",
+                       'actions':[],
+                       'messages':[{'name':"HOWDY",
+                                    'action':self.m_howdy,
+                                    'next_state':"READY"}]},
+                      {'name':"READY",
+                       'actions':[],
+                       'messages':[{'name':"RUN",
+                                    'action':self.m_run,
+                                    'next_state':"RUNNING"},
+                                   {'name':"QUIT",
+                                    'action':self.m_quit,
+                                    'next_state':"START"}]},
+                      {'name':"TIMEOUT",
+                       'actions':[],
+                       'messages':[]},
+                      {'name':"RUNNING",
+                       'actions':[],
+                       'messages':[{'name':"STOP",
+                                    'action':self.do_stop,
+                                    'next_state':"READY"}]}]
+            location = {'type':zmq.ROUTER,
+                        'protocol':"tcp",
+                        'bind_address':"*",
+                        'port_range':[4122,4132]}
+
+            self.proto = ProtocolServer("myproto",
+                                        location,
+                                        messages,
+                                        states)
+
+        def m_howdy(self, msg):
+            msg_list = ["HI", "myfile.name", "0x1234abcd"]
+            msg['message'] = msg_list
+            self.proto.send(msg)
+
+        def m_run(self, msg):
+            msg_list = ["RUN_OK"]
+            msg['message'] = msg_list
+            self.proto.send(msg)
+
+        def m_quit(self, msg):
+            pass
+
+        def do_stop(self, msg):
+            msg_list = ["STOP_OK"]
+            msg['message'] = msg_list
+            self.proto.send(msg)
+
+        def close(self):
+            self.proto.close()
+
+    class MyProtoClient(object):
+        def __init__(self, address, port):
+            states = [{'name':"START",
+                       'actions':[{'name':"begin",
+                                   'action':self.a_begin,
+                                   'next_state':"WAIT_FOR_HI"}],
+                       'messages':[]},
+                      {'name':"WAIT_FOR_HI",
+                       'actions':[],
+                       'timeout':{'duration':2,
+                                  'action':self.t_timeout,
+                                  'next_state':"START"},
+                       'messages':[{'name':"HI",
+                                    'action':None,
+                                    'next_state':"READY"}]},
+                      {'name':"READY",
+                       'actions':[{'name':"run",
+                                   'action':self.a_run,
+                                   'next_state':"WAIT_FOR_RUN_OK"},
+                                  {'name':"quit",
+                                   'action':self.a_quit,
+                                   'next_state':"START"}],
+                       'keepalive':{'duration':5,
+                                    'action':self.k_timeout,
+                                    'next_state':"START"},
+                       'messages':[]},
+                      {'name':"WAIT_FOR_RUN_OK",
+                       'actions':[],
+                       'messages':[{'name':"RUN_OK",
+                                    'action':None,
+                                    'next_state':"RUNNING"}]},
+                      {'name':"RUNNING",
+                       'actions':[{'name':"stop",
+                                   'action':self.a_stop,
+                                   'next_state':"WAIT_FOR_STOP_OK"}],
+                       'messages':[]},
+                      {'name':"*",
+                       'actions':[{'name':"all_test",
+                                   'action':self.a_all_test,
+                                   'next_state':"-"}],
+                       'messages':[{'name':"QUIT",
+                                    'action':None,
+                                    'next_state':"READY"}]},
+                      {'name':"WAIT_FOR_STOP_OK",
+                       'actions':[],
+                       'messages':[{'name':"STOP_OK",
+                                    'action':None,
+                                    'next_state':"READY"}]}]
+            location = {'type':zmq.ROUTER,
+                        'protocol':"tcp",
+                        'address':address,
+                        'port':port}
+
+            self.proto = ProtocolClient("myproto",
+                                        location,
+                                        messages,
+                                        states)
+            self.wait_for_that_ok = False
+            self.value = 0
+            self.all_test_count = 0
+            self.timed_out = False
+
+        def start(self):
+            self.proto.action("begin")
+
+        def run(self):
+            self.proto.action("run")
+
+        def stop(self):
+            self.proto.action("stop")
+
+        def quit(self):
+            self.proto.action("quit")
+
+        def a_begin(self, action_name, action_args):
+            msg = {'message':["HOWDY"]}
+            self.proto.send(msg)
+
+        def a_run(self, action_name, action_args):
+            msg = {'message':["RUN"]}
+            self.proto.send(msg)
+
+        def a_stop(self, action_name, action_args):
+            msg = {'message':["STOP"]}
+            self.proto.send(msg)
+
+        def a_quit(self, action_name, action_args):
+            msg = {'message':["QUIT"]}
+            self.proto.send(msg)
+
+        def a_all_test(self, action_name, action_args):
+            self.all_test_count += 1
+
+        def k_timeout(self):
+            self.proto.log_info("Keepalive timer timeout!")
+
+        def t_timeout(self, state_name):
+            self.proto.log_info("Timed out in state " + state_name + "!")
+            self.timed_out = True
+
+        def all_test(self):
+            self.proto.action("all_test")
+
+        def close(self):
+            self.proto.close()
+
+    s = MyProtoServer()
+    c = MyProtoClient("127.0.0.1", s.proto.zsocket.port)
+
+    c.start()
+    time.sleep(3)
+    assert(c.proto.get_state() == "READY")
+    assert(s.proto.get_state() == "READY")
+
+    # Verify we can trigger our 'all_test' action in all states,
+    # as described in our state array.
+    c.all_test()
+    time.sleep(1)
+    assert(c.all_test_count == 1)
+
+    c.run()
+    time.sleep(1)
+    assert(c.proto.get_state() == "RUNNING")
+    assert(s.proto.get_state() == "RUNNING")
+
+    c.all_test()
+    time.sleep(1)
+    assert(c.all_test_count == 2)
+
+    # Make sure we cant quit in the running state
+    c.quit()
+    time.sleep(1)
+    assert(c.proto.get_state() == "RUNNING")
+    assert(s.proto.get_state() == "RUNNING")
+
+    c.stop()
+    time.sleep(1)
+    assert(c.proto.get_state() == "READY")
+    assert(s.proto.get_state() == "READY")
+
+    # Shutdown the server and verify we timeout on keepalives in
+    # the READY state.
+    s.close()
+
+    time.sleep(10)
+    assert(c.proto.get_state() == "START")
+    assert(c.proto.peer_alive is False)
+
+    c.close()
+    print "test2() PASSED"
+
+
 if __name__ == '__main__':
-    test1()
+    #test1()
+    test2()

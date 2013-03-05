@@ -123,9 +123,7 @@ class AppControlServer(log.Logger):
 
     def a_error(self, action_name, action_args):
         reason = action_args[0]
-        msg_list = ["ERROR", reason]
-        msg['message'] = msg_list
-        self.proto.send(msg)
+        self.proto.send({'message':["ERROR", reason]})
 
     def m_quit(self, msg):
         self.log_info("Received QUIT message!  Quitting.")
@@ -148,7 +146,10 @@ class AppControlServer(log.Logger):
             # Open the file for writting.  We should soon be
             # receiving chunks of file data for this file.
             if self.__create_file() is True:
-                msg = {'message':["LOAD_READY", self.file_name, self.md5sum]}
+                msg = {'message':["LOAD_READY", \
+                                  self.file_name, \
+                                  self.md5sum, \
+                                  self.label]}
                 self.proto.send(msg)
             else:
                 self.__send_error("Cannot open (" + self.file_name
@@ -162,16 +163,16 @@ class AppControlServer(log.Logger):
         is_last = msg['message'][1]
         data_block = msg['message'][2]
 
-        self.__write_file(data_block)
+        self.__write_chunk(data_block)
         msg_list = ["CHUNK_OK"]
         msg['message'] = msg_list
         self.proto.send(msg)
 
-        if is_last == "true":
+        if is_last is True:
             # Close the file and check the md5.  It should match
             # the md5 specified at the start of loading by
             # the client.  If not, error out.
-            self.__close_file(data_block)
+            self.__close_file()
             md5sum = zhelpers.md5sum(self.file_name)
             assert(md5sum is not None)
             if md5sum != self.md5sum:
