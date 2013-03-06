@@ -1,0 +1,15 @@
+#!/opt/local/bin/python
+
+import sys
+import time
+from apphost.agents import app_host_agent
+
+if len(sys.argv) != 2:
+    print "Usage: " + sys.argv[0] + " <username>"
+    exit(1)
+
+user_name = sys.argv[1]
+
+aha = app_host_agent.AppHostAgent(user_name)
+while aha.is_running() is True:
+    time.sleep(1)

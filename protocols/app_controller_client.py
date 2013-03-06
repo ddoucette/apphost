@@ -8,6 +8,12 @@ import types
 class AppControlClient(log.Logger):
     """
         For a description of the protocol, see app_controller_protocol.py.
+        The AppControlClient provides API to load and run a specified
+        application.  The class also provides a callback interface to relay
+        key state transitions and errors to the user.  Among the events
+        relayed to the user via the callback are the events coming directly
+        from the running application.
+        The event names are enumerated below.
     """
     version_major = 1
     version_minor = 0
@@ -15,28 +21,55 @@ class AppControlClient(log.Logger):
     max_chunks_outstanding = 10
     chunksize = 15000
 
-    def __init__(self, user_name, address, port):
+    event_names = ["ERROR",
+                   "READY",
+                   "LOADED",
+                   "RUNNING",
+                   "FINISHED",
+                   "STOPPED",
+                   "EVENT"]
+
+    """
+        The prototype for the event_cback is as follows:
+        event_cback(self, event_name, event_args=[])
+
+        Some events have additional arguments:
+          "ERROR" msg
+          "DONE"  error_code
+          "EVENT" timestamp, event_type, event_name,
+                  event_data_type, event_value
+
+                  Some event types are:
+                    'STDOUT','STDERR','USER'
+    """
+    def __init__(self, user_name, address, port, event_cback):
         log.Logger.__init__(self)
         states = [{'name':"INIT",
                    'actions':[{'name':"say_howdy",
                                'action':self.a_say_howdy,
-                               'next_state':"INIT"}],
-                   'timeout':{'duration':5,
-                              'action':self.t_init_timeout,
-                              'next_state':"-"},
-                   'messages':[{'name':"HI",
-                                'action':self.m_hi,
-                                'next_state':"READY"}]},
-                  {'name':"READY",
-                   'actions':[{'name':"app_is_running",
+                               'next_state':"INIT"},
+                              {'name':"app_is_running",
                                'action':None,
                                'next_state':"RUNNING"},
                               {'name':"app_is_loaded",
                                'action':None,
                                'next_state':"LOADED"},
-                              {'name':"start_loading",
+                              {'name':"app_is_ready",
+                               'action':None,
+                               'next_state':"READY"}],
+                   'timeout':{'duration':5,
+                              'action':self.t_init_timeout,
+                              'next_state':"ERROR"},
+                   'messages':[{'name':"HI",
+                                'action':self.m_hi,
+                                'next_state':"INIT"}]},
+                  {'name':"READY",
+                   'actions':[{'name':"start_loading",
                                'action':self.a_start_loading,
-                               'next_state':"LOADING"}],
+                               'next_state':"LOADING",
+                               'error_state':"ERROR"}],
+                   'keepalive':{'duration':5,
+                                'next_state':"ERROR"},
                    'messages':[]},
                   {'name':"LOADING",
                    'actions':[{'name':"load_ok",
@@ -57,7 +90,10 @@ class AppControlClient(log.Logger):
                   {'name':"LOADED",
                    'actions':[{'name':"run",
                                'action':self.a_run,
-                               'next_state':"-"}],
+                               'next_state':"-",
+                               'error_state':"ERROR"}],
+                   'keepalive':{'duration':5,
+                                'next_state':"ERROR"},
                    'messages':[{'name':"RUN_OK",
                                 'action':None,
                                 'next_state':"RUNNING"}]},
@@ -65,8 +101,10 @@ class AppControlClient(log.Logger):
                    'actions':[{'name':"stop",
                                'action':self.a_stop,
                                'next_state':"-"}],
+                   'keepalive':{'duration':5,
+                                'next_state':"ERROR"},
                    'messages':[{'name':"STOP_OK",
-                                'action':None,
+                                'action':self.m_stop_ok,
                                 'next_state':"LOADED"},
                                {'name':"EVENT",
                                 'action':self.m_event,
@@ -84,8 +122,8 @@ class AppControlClient(log.Logger):
                               {'name':"quit",
                                'action':self.a_quit,
                                'next_state':"DONE"}],
-                   'messages':[{'name':"QUIT",
-                                'action':self.m_quit,
+                   'messages':[{'name':"FINISHED",
+                                'action':self.m_finished,
                                 'next_state':"DONE"},
                                {'name':"ERROR",
                                 'action':self.m_error,
@@ -98,8 +136,10 @@ class AppControlClient(log.Logger):
                             "app-ctrl",
                             location,
                             app_controller_protocol.AppControlProtocol.messages,
-                            states)
+                            states,
+                            self.__state_cback)
         self.user_name = user_name
+        self.event_cback = event_cback
         self.file_name = ""
         self.md5sum = ""
         self.label = ""
@@ -158,12 +198,11 @@ class AppControlClient(log.Logger):
             self.proto.action("app_is_loaded")
         elif state == 'RUNNING':
             self.proto.action("app_is_running")
+        else:
+            self.proto.action("app_is_ready")
 
     def t_init_timeout(self, state_name):
-        # We have timed out waiting for the 'HI' message from
-        # the server.  Resend.
-        self.log_info("Timeout waiting for HI message, resending...")
-        self.say_howdy()
+        self.error("Timeout waiting for HI message response!")
 
     def t_timeout(self, state_name):
         self.log_info("Timeout in state: " + state_name)
@@ -208,12 +247,16 @@ class AppControlClient(log.Logger):
         self.chunks_outstanding = 0
         self.__send_file_chunks()
 
+    def m_stop_ok(self, msg):
+        self.__report_event("STOPPED")
+
     def m_event(self, msg):
         pass
 
-    def m_quit(self, msg):
+    def m_finished(self, msg):
         self.error_code = int(msg['message'][1])
         self.log_info("Application finished (" + str(self.error_code) + ")")
+        self.__report_event("FINISHED", [msg['message'][1]])
 
     def m_error(self, msg):
         error_message = msg['message'][1]
@@ -224,10 +267,12 @@ class AppControlClient(log.Logger):
         msg_list = ["RUN", command]
         msg = {'message': msg_list}
         self.proto.send(msg)
+        return True
 
     def a_stop(self, action_name, action_args):
         msg = {'message': ["STOP"]}
         self.proto.send(msg)
+        return True
 
     def a_say_howdy(self, action_name, action_args):
         msg_list = ["HOWDY",
@@ -235,6 +280,7 @@ class AppControlClient(log.Logger):
                     self.version_major,
                     self.version_minor]
         self.proto.send({'message':msg_list})
+        return True
 
     def a_start_loading(self, action_name, action_args):
         file_name = action_args[0]
@@ -243,7 +289,7 @@ class AppControlClient(log.Logger):
         md5sum = zhelpers.md5sum(file_name)
         if md5sum is None:
             self.log_error("Cannot find specified file: " + file_name)
-            return
+            return False
 
         self.md5sum = md5sum
         self.file_name = file_name
@@ -255,16 +301,19 @@ class AppControlClient(log.Logger):
                     self.md5sum,
                     self.label]
         self.proto.send({'message':msg_list})
+        return True
 
     def a_error(self, action_name, action_args):
         msg = action_args[0]
         self.log_error(msg)
+        self.__report_event("ERROR", [msg])
+        return True
 
     def a_quit(self, action_name, action_args):
         self.proto.send({'message':["QUIT"]})
+        return True
 
     def __send_file_chunks(self):
-
         while self.f is not None and \
               self.chunks_outstanding < self.max_chunks_outstanding:
             chunk = self.f.read(self.chunksize)
@@ -291,6 +340,21 @@ class AppControlClient(log.Logger):
                 # have been detected above.
                 self.bug("Empty chunk read!")
 
+    def __state_cback(self, state_name):
+        if state_name == "READY":
+            self.__report_event("READY")
+
+        if state_name == "RUNNING":
+            self.__report_event("RUNNING")
+
+        if state_name == "LOADED":
+            self.__report_event("LOADED")
+
+    def __report_event(self, event_name, event_args=[]):
+        assert(event_name in self.event_names)
+        if self.event_cback is not None:
+            self.event_cback(self, event_name, event_args)
+
     def get_state(self):
         return self.proto.get_state()
 
@@ -299,16 +363,17 @@ class AppControlClient(log.Logger):
             self.f.close()
             self.f = None
         self.proto.close()
+        self.alive = False
 
 
 def test1():
 
     user_name = "sysadmin"
     s = app_controller_server.AppControlServer(user_name)
-    c = AppControlClient(user_name, "127.0.0.1", s.proto.zsocket.port)
+    c = AppControlClient(user_name, "127.0.0.1", s.proto.zsocket.port, None)
 
     time.sleep(2)
-    assert(c.get_state() == "INIT")
+    assert(c.get_state() == "READY")
 
     c.load("testfile.bin", "testapp1")
     time.sleep(2)

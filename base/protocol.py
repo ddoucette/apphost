@@ -21,13 +21,12 @@ class Protocol(log.Logger):
             self.rx_err_bad_header = 0
             self.rx_err_invalid = 0
 
-    def __init__(self, name, location, messages, states):
+    def __init__(self, name, location, messages, states, state_cback=None):
         assert(isinstance(location, types.DictType))
-        assert(isinstance(messages, types.ListType))
+        assert(isinstance(messages, types.DictType))
         assert(isinstance(states, types.ListType))
 
         log.Logger.__init__(self)
-        self.__verify_states(states)
 
         self.log_level = "D"
 
@@ -36,7 +35,10 @@ class Protocol(log.Logger):
         self.messages = messages
         self.states = states
         self.name = name
+        self.state_cback = None
         self.address = ""
+
+        self.__verify_states(states)
 
         # Within the 'states' array, there may be a description
         # which applies to 'all states'.  I.e. the state name is '*'.
@@ -63,6 +65,11 @@ class Protocol(log.Logger):
         self.current_state = {'name':"-"}
         self.__set_state(states[0]['name'])
 
+        # We purposely wait to set the state callback here, because most
+        # likely the superclass of this object is not yet ready to receive
+        # state callbacks.
+        self.state_cback = state_cback
+
         self.log_info("Created protocol (" + name + ") "
                      + str(len(messages)) + " messages, "
                      + str(len(states)) + " states.")
@@ -83,9 +90,10 @@ class Protocol(log.Logger):
             # Check to see if we have received our last keep-alive
             # message.  If not, callback to the user.
             if self.peer_alive is False:
-                keepalive_action = self.current_state['keepalive']['action']
-                if keepalive_action is not None:
-                    keepalive_action()
+                if 'action' in self.current_state['keepalive']:
+                    keepalive_action = self.current_state['keepalive']['action']
+                    if keepalive_action is not None:
+                        keepalive_action()
                 self.__set_state(self.current_state['keepalive']['next_state'])
             else:
                 # Send another keepalive message to the peer.
@@ -121,13 +129,19 @@ class Protocol(log.Logger):
                 continue
 
             for action in state['actions']:
-                if action['next_state'] == "-":
-                    continue
-                if action['next_state'] not in state_names:
+                if action['next_state'] != "-" \
+                    and action['next_state'] not in state_names:
                     self.bug("State: " + state['name']
                                   + " action: " + action['name']
                                   + " next_state ("
                                   + action['next_state']
+                                  + ") is not a valid state!")
+                if 'error_state' in action:
+                    if action['error_state'] not in state_names:
+                        self.bug("State: " + state['name']
+                                  + " action: " + action['name']
+                                  + " error_state ("
+                                  + action['error_state']
                                   + ") is not a valid state!")
 
             for message in state['messages']:
@@ -157,6 +171,17 @@ class Protocol(log.Logger):
                                   + " next_state ("
                                   + state['keepalive']['next_state']
                                   + ") is not a valid state!")
+
+        # Go through each message handler in each state and verify
+        # the message actually exists.
+        for state in states:
+            if 'messages' in state:
+                for message in state['messages']:
+                    if self.__find_msg(message['name']) is None:
+                        self.bug("State: " + state['name']
+                                  + " message ("
+                                  + message['name']
+                                  + ") is not a valid message!")
 
     def get_state(self):
         return self.current_state['name']
@@ -195,6 +220,9 @@ class Protocol(log.Logger):
             self.interface.remove_timer("keep-alive")
 
         self.current_state = state
+        if self.state_cback is not None:
+            self.state_cback(self.current_state['name'])
+
         # If there is a timeout specified for the next state,
         # activate the timer now.
         if 'timeout' in self.current_state:
@@ -216,9 +244,8 @@ class Protocol(log.Logger):
         self.send({'message':["keep-alive-req"]})
 
     def __find_msg(self, msg_hdr):
-        for msg in self.messages:
-            if msg_hdr in msg:
-                return msg
+        if msg_hdr in self.messages:
+            return self.messages[msg_hdr]
         return None
 
     def __rx_filter(self, msg):
@@ -244,18 +271,16 @@ class Protocol(log.Logger):
         # First, we make sure the message just received is actually
         # a message we understand.  (I.e. this message is in our
         # list of valid messages)
-        msg_def = self.__find_msg(msg_hdr)
-        if msg_def is None:
+        msg_fields = self.__find_msg(msg_hdr)
+        if msg_fields is None:
             self.log_error("Invalid message header: " + msg_hdr)
             self.stats.rx_err_bad_header += 1
             return None
 
-        fields = msg_def[msg_hdr]
-
-        if len(msg_list) - 1 != len(fields):
+        if len(msg_list) - 1 != len(msg_fields):
             self.log_error("Invalid number of message fields"
                           + " received for message '"+ msg_hdr + "'"
-                          + " Expecting " + str(len(fields)) + " but got "
+                          + " Expecting " + str(len(msg_fields)) + " but got "
                           + str(len(msg_list) - 1))
             self.stats.rx_err_invalid += 1
             return None
@@ -266,7 +291,7 @@ class Protocol(log.Logger):
         # to create a message list which contains the values cast
         # into their correct type.
         field_list = [msg_hdr]
-        for i, field in enumerate(fields):
+        for i, field in enumerate(msg_fields):
             rcv_field = msg_list[i + 1]
             try:
                 # Special case for booleans.  We need to cast the
@@ -339,8 +364,6 @@ class Protocol(log.Logger):
 
     def __intf_action(self, action_name, arg_list=[]):
 
-        self.log_info("intf_action: " + str(arg_list))
-
         # There are 2 sets of actions we need to query to process
         # this action request from the interface.
         # 1) The actions from the current state.
@@ -361,6 +384,15 @@ class Protocol(log.Logger):
                         if action(action_name, arg_list) == False:
                             self.log_error("Action failed for action ("
                                           + action_name + ")")
+                            # If there is an 'error_state' for this action,
+                            # then we move there now.
+                            # We do not explicitly call do_action because
+                            # it could be the error state action which
+                            # is failing.  We manually go to the error
+                            # state here.  No recursive action!
+                            if 'error_state' in action_def:
+                                error_state = action_def['error_state']
+                                self.__set_state(error_state)
                             return
                     self.__set_state(next_state)
                     return
@@ -384,8 +416,8 @@ class Protocol(log.Logger):
 
 class ProtocolServer(Protocol):
 
-    def __init__(self, name, location, messages, states):
-        Protocol.__init__(self, name, location, messages, states)
+    def __init__(self, name, location, messages, states, state_cback=None):
+        Protocol.__init__(self, name, location, messages, states, state_cback)
         self.zsocket = zsocket.ZSocketServer(location['type'],
                                              location['protocol'],
                                              location['bind_address'],
@@ -398,8 +430,8 @@ class ProtocolServer(Protocol):
 
 class ProtocolClient(Protocol):
 
-    def __init__(self, name, location, messages, states):
-        Protocol.__init__(self, name, location, messages, states)
+    def __init__(self, name, location, messages, states, state_cback=None):
+        Protocol.__init__(self, name, location, messages, states, state_cback)
         self.zsocket = zsocket.ZSocketClient(location['type'],
                                              location['protocol'],
                                              location['address'],
@@ -650,18 +682,18 @@ def test1():
 
 def test2():
 
-    messages = [{'HOWDY': []}, \
-                {'HI': [{'name':'file name', \
+    messages = {'HOWDY': [], \
+                'HI': [{'name':'file name', \
                          'type':types.StringType}, \
                         {'name':'md5sum', \
-                         'type':types.StringType}]}, \
-                {'RUN': []}, \
-                {'RUN_OK': []}, \
-                {'STOP': []}, \
-                {'STOP_OK': []}, \
-                {'FINISHED': [{'name':'error code',
-                               'type':types.IntType}]}, \
-                {'QUIT': []}]
+                         'type':types.StringType}], \
+                'RUN': [], \
+                'RUN_OK': [], \
+                'STOP': [], \
+                'STOP_OK': [], \
+                'FINISHED': [{'name':'error code',
+                               'type':types.IntType}], \
+                'QUIT': []}
 
     class MyProtoServer(object):
 

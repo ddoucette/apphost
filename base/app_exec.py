@@ -1,46 +1,35 @@
 
-import projpath
-import system
-import vitals
 import subprocess
 import zmq
-import zsocket
-import interface
 import threading
 import select
-import event_source
-import event_collector
 import os
-from local_log import *
+from apphost.base import interface, zsocket, log, override
 
 
-class AppExec(object):
+class AppExec(log.Logger):
 
     """
         AppExec controls the execution of a command.
+
+        The prototype for the event_cback API is:
+
+        event_cback(event_name, event_args=[])
     """
-    def __init__(self, cwd=None):
-        self.user_name = system.System.GetUserName()
-        self.application_name = system.System.GetApplicationName()
-        self.cmdline = []
-        self.cwd = cwd
+    def __init__(self, user_name, file_name, label, event_cback):
+        log.Logger.__init__(self)
+
+        self.user_name = user_name
+        self.file_name = file_name
+        self.event_cback = event_cback
+        self.label = label
+        self.cwd = "."
         self.proc = None
         self.child_env = []
-        self.return_value = -1
+        self.return_code = -1
         self.poller = None
         self.alive = False
 
-        # STDOUT/STDERR messages will be sent out as events
-        self.stdout_event = event_source.EventSource(
-                                    "stdout/" + self.application_name,
-                                    "STDOUT",
-                                    self.user_name,
-                                    self.application_name)
-        self.stderr_event = event_source.EventSource(
-                                    "stderr/" + self.application_name,
-                                    "STDERR",
-                                    self.user_name,
-                                    self.application_name)
         self.thread = threading.Thread(target=self.__thread_entry)
         self.thread.daemon = True
 
@@ -51,28 +40,34 @@ class AppExec(object):
                 if fd == self.proc.stdout.fileno():
                     msg = self.proc.stdout.readline()
                     if msg != "":
-                        self.stdout_event.send(msg);
+                        self.__process_stdout(msg);
 
                 if fd == self.proc.stderr.fileno():
                     msg = self.proc.stderr.readline()
                     if msg != "":
-                        self.stderr_event.send(msg);
+                        self.__process_stderr(msg);
 
             self.proc.poll()
             if self.proc.returncode != None:
-                self.return_value = self.proc.returncode
+                self.return_code = self.proc.returncode
                 self.alive = False
-                Llog.LogInfo("Process terminated ("
-                             + str(self.return_value) + ")")
+                self.log_info("Process terminated ("
+                             + str(self.return_code) + ")")
+                self.event_cback("FINISHED", [self.return_code])
 
-    def run(self):
+    def __process_stdout(self, msg):
+        self.event_cback("STDOUT", msg)
+
+    def __process_stderr(self, msg):
+        self.event_cback("STDERR", msg)
+
+    def run(self, cmdline):
         assert(self.proc is None)
-        assert(len(self.cmdline) > 0)
 
-        Llog.LogInfo("Executing: " + " ".join(self.cmdline))
+        self.log_info("Executing: " + " ".join(cmdline))
 
         try:
-            self.proc = subprocess.Popen(self.cmdline,
+            self.proc = subprocess.Popen(cmdline,
                                          stdout=subprocess.PIPE,
                                          #stdout=None,
                                          stderr=subprocess.PIPE,
@@ -109,16 +104,18 @@ class AppExec(object):
 
 class JavaAppExec(AppExec):
 
-    system_jars = ["DukascopyController-1.0-SNAPSHOT.jar"]
+    #system_jars = ["DukascopyController-1.0-SNAPSHOT.jar"]
+    system_jars = []
 
-    def __init__(self, jarfiles, mainappname, args, cwd=None):
-        AppExec.__init__(self, cwd)
+    def __init__(self, user_name, jarfile, label, event_cback):
+        AppExec.__init__(self, user_name, jarfile, label, event_cback)
 
-        classpath = ":".join(jarfiles + self.system_jars)
-        self.cmdline = ['java',
-                        '-classpath',
-                        classpath,
-                        mainappname] + args
+        self.classpath = ":".join([jarfile] + self.system_jars)
+
+    @override.overrides(AppExec)
+    def run(self, command):
+        cmdline = ['java', '-classpath', self.classpath, command]
+        AppExec.run(self, cmdline)
 
 
 class AppEventProxy(object):
@@ -153,179 +150,43 @@ class AppEventProxy(object):
         self.interface = interface.Interface(self.process_app_msgs)
         self.interface.add_socket(self.zsocket)
 
-    def __create_event(self, event_name, event_type):
-        # We must enforce a limit on the number of events the
-        # user's application an create.  This will be based on the
-        # SLA the user has.
-        max_events = system.System.GetSLA()['max_event_types']
-
-        if len(self.events) >= max_events + 1:
-            Llog.LogDebug("Exceeded max_event_types: " + str(max_events))
-            return None
-
-        event = event_source.EventSource(event_name,
-                                         event_type,
-                                         self.user_name,
-                                         self.application_name)
-        self.events.append(event)
-        return event
-
-    def __find_event(self, event_name, event_type):
-        for event in self.events:
-            if event.event_name == event_name \
-                and event.event_type == event_type:
-                return event
-        return None
-
-    def __get_event(self, event_name, event_type):
-        event = self.__find_event(event_name, event_type)
-        if event is None:
-            event = self.__create_event(event_name, event_type)
-        return event
-
     def process_app_msgs(self, event_msg):
-        Llog.LogInfo("RX: " + event_msg)
-        app_event = event_collector.EventCollector.event_msg_parse(event_msg)
-        if app_event is None:
-            Llog.LogError("Could not parse event message!: " + str(event_msg))
-            return
-
-        event = self.__get_event(app_event['name'], app_event['type'])
-        if event is not None:
-            event.send(app_event['contents'])
+        self.log_info("RX: " + event_msg)
 
     def close(self):
         self.interface.close()
 
 
-class AppFileLoader(object):
-
-    """
-        The AppFileLoader class provides an API to verify an application
-        file's existence, and receive chunks of application file data
-        to build the application file locally.
-
-        To use:
-
-        app_loader = AppFileLoader(file_name, md5-sum)
-
-        if app_loader.exists() is False:
-            app_loader.load_file_start()
-
-        ...
-
-        app_loader.file_chunk(bytes)
-        app_loader.file_chunk(bytes)
-        app_loader.file_chunk(bytes)
-
-        app_loader.load_file_complete()
-
-        if app_loader.exists() is True:
-            # file loaded correctly, and the md5 checks out.
-        else:
-            # bad file load
-
-    """
-    def __init__(self, file_name, md5):
-        self.file_name = file_name
-        self.md5_sum = md5
-        self.f = None
-
-    def __del__(self):
-        if self.f is not None:
-            self.f.close()
-            self.f = None;
-
-    def exists(self):
-        md5 = self.calc_md5()
-        if md5 == self.md5_sum:
-            return True
-        return False
-
-    def calc_md5(self):
-        proc = subprocess.Popen(['md5sum', self.file_name],
-                                         stdout=subprocess.PIPE,
-                                         stderr=subprocess.PIPE,
-                                         cwd=".",
-                                         env=None)
-        out_str, err_str = proc.communicate()
-        if out_str != "":
-            md5, sep, out_str = out_str.partition(" ")
-            return md5
-        return None
-
-    def load_file_start(self):
-        if self.f is not None:
-            self.f.close()
-            self.f = None
-
-        try:
-            self.f = open(self.file_name, 'w+')
-        except:
-            Llog.LogError("Cannot open file ("
-                          + self.file_name + ") for writting!")
-            return False
-        return True
-
-    def file_chunk(self, file_bytes):
-        assert(self.f is not None)
-        self.f.write(file_bytes)
-
-    def load_file_complete(self):
-        if self.f is not None:
-            self.f.close()
-            self.f = None;
-
-
 def test1():
 
+    class MyClass(log.Logger):
+        def __init__(self, user_name, file_name, label, command):
+            log.Logger.__init__(self)
+            self.user_name = user_name
+            self.file_name = file_name
+            self.label = label
+
+            self.app = JavaAppExec(self.user_name,
+                                            self.file_name,
+                                            self.label,
+                                            self.__app_event_cback)
+            self.app.run(command)
+
+        def __app_event_cback(self, event_name, event_args=[]):
+            if event_name == "STDOUT":
+                self.log_info("STDOUT:" + event_args[0])
+            if event_name == "STDERR":
+                self.log_info("STDERR:" + event_args[0])
+            if event_name == "FINISHED":
+                self.log_info("FINISHED:" + str(event_args[0]))
+
     user_name = "sysadmin"
-    app_name = "test1"
-    mod_name = "app_exec"
-
-    system.System.Init(user_name, app_name, mod_name)
-
-    # Start up our event proxy
-    evt_proxy = AppEventProxy(user_name, app_name)
-    # Give the proxy event a bit of time for discovery
-    time.sleep(3)
-
-    app = JavaAppExec(["HelloWorld-1.0-SNAPSHOT.jar"]
-                      "com.mycompany.HelloWorld.App",
-                      [user_name, app_name],
-                      ".")
-    app.run()
-
-    is_running = app.is_running()
-    assert(is_running is True)
-
-    time.sleep(20)
-
-    app.stop()
+    file_name = "HelloWorld-1.0-SNAPSHOT.jar"
+    label = "myapp1"
+    command = "com.sdde.HelloWorld.Main"
+    c = MyClass(user_name, file_name, label, command)
     time.sleep(1)
-    is_running = app.is_running()
-    assert(is_running is False)
-
-    evt_proxy.close()
-    print "PASSED"
-
-
-def test2():
-
-    app_loader = AppFileLoader("HelloWorld-1.0-SNAPSHOT.jar",
-                               "10b461a2f52ec6280ee1ea4bb46b823a")
-
-    md5 = app_loader.calc_md5()
-    if md5 is not None:
-        print "md5: " + md5
-    else:
-        print "Cannot calculate md5"
-
-    assert(app_loader.exists() is True)
-    print "test2() PASSED"
-
+    print "test1() PASSED"
 
 if __name__ == '__main__':
-    import time
-    #test1()
-    test2()
+    test1()

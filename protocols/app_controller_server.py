@@ -2,6 +2,7 @@
 from apphost.base import log, protocol, zhelpers
 from apphost.protocols import app_controller_protocol
 import zmq
+import time
 
 
 class AppControlServer(log.Logger):
@@ -9,7 +10,7 @@ class AppControlServer(log.Logger):
     version_major = 1
     version_minor = 0
 
-    def __init__(self, user_name):
+    def __init__(self, user_name, event_cback=None):
         log.Logger.__init__(self)
 
         states = [{'name':"READY",
@@ -64,11 +65,14 @@ class AppControlServer(log.Logger):
                         "app-ctrl",
                         location,
                         app_controller_protocol.AppControlProtocol.messages,
-                        states)
+                        states,
+                        self.__state_cback)
         self.user_name = user_name
+        self.event_cback = event_cback
         self.file_name = "-"
         self.md5sum = "-"
         self.label = "-"
+        self.error_code = 0
         self.f = None
         self.alive = True
         self.client_version_minor = 0
@@ -77,6 +81,20 @@ class AppControlServer(log.Logger):
     # of this server instance.
     def is_alive(self):
         return self.alive
+
+    def finished(self, error_code):
+        self.proto.action("finished", [error_code])
+
+    def event(self, event_msgs=[]):
+        self.proto.action("event", event_msgs)
+
+    def close(self):
+        self.__close_file()
+        self.proto.close()
+        self.alive = False
+
+    def __state_cback(self, state_name):
+        pass
 
     def m_howdy(self, msg):
 
@@ -113,7 +131,7 @@ class AppControlServer(log.Logger):
         self.log_info("Timeout in state: " + state_name)
 
     def a_finished(self, action_name, action_args):
-        pass
+        self.proto.send({'message':["FINISHED", str(action_args[0])]})
 
     def a_event(self, action_name, action_args):
         pass
@@ -126,6 +144,11 @@ class AppControlServer(log.Logger):
         self.proto.send({'message':["ERROR", reason]})
 
     def m_quit(self, msg):
+        # Stop the application, if it is running.
+        # Return the error code
+        self.proto.send({'message':["FINISHED", str(self.error_code)]})
+        # Wait briefly to allow the FINISHED message to be sent.
+        time.sleep(3)
         self.log_info("Received QUIT message!  Quitting.")
         self.close()
 
@@ -158,6 +181,7 @@ class AppControlServer(log.Logger):
     def a_load_complete(self, action_name, action_args):
         msg = {'message':["LOAD_OK", self.file_name, self.md5sum, self.label]}
         self.proto.send(msg)
+        self.__report_event("LOADED")
 
     def m_chunk(self, msg):
         is_last = msg['message'][1]
@@ -184,15 +208,21 @@ class AppControlServer(log.Logger):
 
     def m_run(self, msg):
         command = msg['message'][1]
+        self.error_code = 0
 
-        # XXX execute the file/command
+        self.__report_event("RUN", [command])
 
         msg_list = ["RUN_OK"]
         msg['message'] = msg_list
         self.proto.send(msg)
 
     def m_stop(self, msg):
+        self.__report_event("STOP")
         self.proto.send({'message':["STOP_OK"]})
+
+    def __report_event(self, event_name, event_args=[]):
+        if self.event_cback is not None:
+            self.event_cback(self, event_name, event_args)
 
     def __create_file(self):
         self.__close_file()
@@ -218,11 +248,6 @@ class AppControlServer(log.Logger):
     def __error(self, error_message):
         self.proto.action("error", [error_message])
 
-    def close(self):
-        self.__close_file()
-        self.proto.close()
-        self.alive = False
-
 
 def test1():
 
@@ -235,5 +260,4 @@ def test1():
 
 
 if __name__ == '__main__':
-    import time
     test1()

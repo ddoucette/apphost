@@ -46,13 +46,13 @@ class AppControlProtocol(object):
          client --->  LAOD                ---> server
          client <---  ERROR <reason/description> <--- server
     """
-    messages = [{'HOWDY': [{'name':'user name', \
+    messages = {'HOWDY': [{'name':'user name', \
                             'type':types.StringType}, \
                            {'name':'major version', \
                             'type':types.IntType}, \
                            {'name':'minor version', \
-                            'type':types.IntType}]}, \
-                  {'HI': [{'name':'major version', \
+                            'type':types.IntType}], \
+                'HI': [{'name':'major version', \
                            'type':types.IntType}, \
                           {'name':'minor version', \
                            'type':types.IntType}, \
@@ -63,38 +63,38 @@ class AppControlProtocol(object):
                           {'name':'md5sum', \
                            'type':types.StringType}, \
                           {'name':'label', \
-                           'type':types.StringType}]}, \
-                  {'LOAD': [{'name':'file_name', \
+                           'type':types.StringType}], \
+                 'LOAD': [{'name':'file_name', \
                              'type':types.StringType}, \
                             {'name':'md5sum', \
                              'type':types.StringType}, \
                             {'name':'label', \
-                             'type':types.StringType}]}, \
-                  {'LOAD_OK': [{'name':'file_name', \
+                             'type':types.StringType}], \
+                 'LOAD_OK': [{'name':'file_name', \
                                 'type':types.StringType}, \
                                {'name':'md5sum', \
                                 'type':types.StringType}, \
                                {'name':'label', \
-                                'type':types.StringType}]}, \
-                  {'LOAD_READY': [{'name':'file_name', \
+                                'type':types.StringType}], \
+                 'LOAD_READY': [{'name':'file_name', \
                                    'type':types.StringType}, \
                                   {'name':'md5sum', \
                                    'type':types.StringType}, \
                                   {'name':'label', \
-                                   'type':types.StringType}]}, \
-                  {'CHUNK': [{'name':'is last', \
+                                   'type':types.StringType}], \
+                 'CHUNK': [{'name':'is last', \
                               'type':types.BooleanType}, \
                              {'name':'data block', \
-                              'type':types.StringType}]}, \
-                  {'CHUNK_OK': []}, \
-                  {'RUN': [{'name':'command', \
-                            'type':types.StringType}]}, \
-                  {'RUN_OK': []}, \
-                  {'STOP': []}, \
-                  {'STOP_OK': []}, \
-                  {'FINISHED': [{'name':'error code', \
-                                 'type':types.IntType}]}, \
-                  {'EVENT': [{'name':'event type', \
+                              'type':types.StringType}], \
+                 'CHUNK_OK': [], \
+                 'RUN': [{'name':'command', \
+                            'type':types.StringType}], \
+                 'RUN_OK': [], \
+                 'STOP': [], \
+                 'STOP_OK': [], \
+                 'FINISHED': [{'name':'error code', \
+                                 'type':types.IntType}], \
+                 'EVENT': [{'name':'event type', \
                               'type':types.StringType},
                              {'name':'event name', \
                               'type':types.StringType}, \
@@ -103,7 +103,7 @@ class AppControlProtocol(object):
                              {'name':'*', \
                               'type':types.StringType, \
                               'min':0,
-                              'max':20}]}, \
-                  {'ERROR': [{'name':'message', \
-                              'type':types.StringType}]}, \
-                  {'QUIT': []}]
+                              'max':20}], \
+                 'ERROR': [{'name':'message', \
+                              'type':types.StringType}], \
+                 'QUIT': []}

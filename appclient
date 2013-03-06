@@ -4,8 +4,30 @@ import sys
 import time
 from apphost.protocols import app_controller_client
 
-if len(sys.argv) != 6:
-    print "Usage: " + sys.argv[0] + " <username> <address> <port> <file_name> <label>"
+def event_cback(acc, event_name, event_args=[]):
+    print "(" + ":".join([acc.user_name, acc.file_name, acc.label]) + ")" \
+           + "Event: " + event_name
+    if event_name == "READY":
+        acc.load(file_name, label)
+
+    if event_name == "RUNNING":
+        #acc.stop()
+        pass
+
+    if event_name == "LOADED":
+        acc.run("mycommand")
+
+    if event_name == "ERROR":
+        print "ERROR: " + event_args[0]
+        acc.close()
+
+    if event_name == "FINISHED":
+        print "App complete: " + str(event_args[0])
+        acc.quit()
+        acc.close()
+
+if len(sys.argv) != 7:
+    print "Usage: " + sys.argv[0] + " <username><address><port><file_name><label><command>"
     exit(1)
 
 user_name = sys.argv[1]
@@ -13,34 +35,12 @@ address = sys.argv[2]
 port = int(sys.argv[3])
 file_name = sys.argv[4]
 label = sys.argv[5]
+command = sys.argv[6]
 
-acs = app_controller_client.AppControlClient(user_name,
+c = app_controller_client.AppControlClient(user_name,
                                              address,
-                                             port)
-while acs.alive is True and acs.get_state() == "INIT":
+                                             port,
+                                             event_cback)
+
+while c.alive is True:
     time.sleep(1)
-
-if acs.get_state() == "LOADED":
-    # File already loaded!
-    print "Server has file: " + acs.file_name + " : " + acs.md5sum
-if acs.get_state() == "READY":
-    acs.load(file_name, label)
-    while acs.alive is True and acs.get_state() == "LOADING":
-        time.sleep(1)
-    if acs.get_state() == "LOADED":
-        print "loaded file: " + acs.file_name + " : " + acs.md5sum
-
-if acs.get_state() == "LOADED":
-    acs.run("mycommand")
-
-running = 0
-while acs.alive is True and acs.get_state() != "ERROR":
-    print acs.get_state()
-    time.sleep(1)
-    if acs.get_state() == "RUNNING":
-        running += 1
-        if running > 10:
-            acs.stop()
-            running = 0
-    if acs.get_state() == "LOADED":
-        acs.run("mycommand")

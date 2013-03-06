@@ -58,7 +58,8 @@ class Interface(log.Logger):
     def remove_timer(self, name):
         for timer in self.timers:
             if timer['name'] == name:
-                timer['timer'].cancel()
+                if timer['timer'] is not None:
+                    timer['timer'].cancel()
                 timer['timer'] = None
                 self.timers.remove(timer)
                 return
@@ -126,16 +127,6 @@ class Interface(log.Logger):
         self.in_pipe[1].send(msg)
 
     def close(self):
-        self.closed = True
-
-        # Cancel all running timers
-        for timer in self.timers:
-            timer['timer'].cancel()
-            timer['timer'] = None
-
-        for zsocket in self.sockets[:]:
-            self.remove_socket(zsocket)
-
         # Send the KILL command to the interface thread.
         self.__push_in_msg_raw({'message':["INTF_KILL"]})
 
@@ -149,11 +140,6 @@ class Interface(log.Logger):
                 print "ERROR: Interface has not cleaned up!  Exiting anyway!"
                 break
             iterations -= 1
-
-        if self.in_pipe is not None:
-            self.in_pipe[0].close()
-            self.in_pipe[1].close()
-        self.ctx.destroy()
 
     def do_action(self, action_name, action_args=[]):
         msg_list = ["INTF_ACTION", action_name]
@@ -218,8 +204,24 @@ class Interface(log.Logger):
             # Null message meant to unblock the thread.
             return
         elif msg_list[0] == "INTF_KILL":
+            self.closed = True
+
+            # Cancel all running timers
+            for timer in self.timers:
+                if timer['timer'] is not None:
+                    timer['timer'].cancel()
+                timer['timer'] = None
+
+            for zsocket in self.sockets[:]:
+                self.remove_socket(zsocket)
+
             # We are finished.  Just get out of the thread.
             self.alive = False
+
+            if self.in_pipe is not None:
+                self.in_pipe[0].close()
+                self.in_pipe[1].close()
+            self.ctx.destroy()
             return
         elif msg_list[0] == "INTF_ACTION":
             # Message to execute our action callback.  Basically a
@@ -308,8 +310,9 @@ def test1():
 
 def test2():
 
-    class MyServer():
+    class MyServer(log.Logger):
         def __init__(self, name):
+            log.Logger.__init__(self)
             self.name = name
             self.interface = Interface(action_cback=self.process_action,
                                        timer_cback=self.process_timer)
