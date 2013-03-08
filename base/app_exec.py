@@ -4,6 +4,7 @@ import zmq
 import threading
 import select
 import os
+import types
 from apphost.base import interface, zsocket, log, override
 
 
@@ -27,22 +28,22 @@ class AppExec(log.Logger):
         self.proc = None
         self.child_env = []
         self.return_code = -1
-        self.poller = None
         self.alive = False
 
         self.thread = threading.Thread(target=self.__thread_entry)
         self.thread.daemon = True
 
     def __thread_entry(self):
+        read_list = [self.proc.stdout, self.proc.stderr]
         while self.alive is True:
-            events = self.poller.poll()
-            for fd, event in events:
-                if fd == self.proc.stdout.fileno():
+            (rdfiles, wrfiles, exfiles) = select.select(read_list,[],[])
+            for fd in rdfiles:
+                if fd == self.proc.stdout:
                     msg = self.proc.stdout.readline()
                     if msg != "":
                         self.__process_stdout(msg);
 
-                if fd == self.proc.stderr.fileno():
+                if fd == self.proc.stderr:
                     msg = self.proc.stderr.readline()
                     if msg != "":
                         self.__process_stderr(msg);
@@ -56,12 +57,13 @@ class AppExec(log.Logger):
                 self.event_cback("FINISHED", [self.return_code])
 
     def __process_stdout(self, msg):
-        self.event_cback("STDOUT", msg)
+        self.event_cback("STDOUT", [msg])
 
     def __process_stderr(self, msg):
-        self.event_cback("STDERR", msg)
+        self.event_cback("STDERR", [msg])
 
     def run(self, cmdline):
+        assert(isinstance(cmdline, types.ListType))
         assert(self.proc is None)
 
         self.log_info("Executing: " + " ".join(cmdline))
@@ -83,10 +85,6 @@ class AppExec(log.Logger):
         self.pid = self.proc.pid
         self.alive = True
 
-        self.poller = select.poll()
-        self.poller.register(self.proc.stdout, select.POLLIN)
-        self.poller.register(self.proc.stderr, select.POLLIN)
-
         # Start our thread which monitors stdout/stderr of our app.
         self.thread.start()
 
@@ -104,8 +102,7 @@ class AppExec(log.Logger):
 
 class JavaAppExec(AppExec):
 
-    #system_jars = ["DukascopyController-1.0-SNAPSHOT.jar"]
-    system_jars = []
+    system_jars = ["DukascopyController-1.0-SNAPSHOT.jar"]
 
     def __init__(self, user_name, jarfile, label, event_cback):
         AppExec.__init__(self, user_name, jarfile, label, event_cback)
@@ -113,8 +110,9 @@ class JavaAppExec(AppExec):
         self.classpath = ":".join([jarfile] + self.system_jars)
 
     @override.overrides(AppExec)
-    def run(self, command):
-        cmdline = ['java', '-classpath', self.classpath, command]
+    def run(self, cmd_args):
+        assert(isinstance(cmd_args, types.ListType))
+        cmdline = ['java', '-classpath', self.classpath] + cmd_args
         AppExec.run(self, cmdline)
 
 
@@ -183,10 +181,11 @@ def test1():
     user_name = "sysadmin"
     file_name = "HelloWorld-1.0-SNAPSHOT.jar"
     label = "myapp1"
-    command = "com.sdde.HelloWorld.Main"
+    command = ["com.mycompany.HelloWorld.App", user_name, file_name]
     c = MyClass(user_name, file_name, label, command)
-    time.sleep(1)
+    time.sleep(3)
     print "test1() PASSED"
 
 if __name__ == '__main__':
+    import time
     test1()

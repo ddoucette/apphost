@@ -25,7 +25,7 @@ public class EventSource {
     {
         this.log = new Llog("EventSource:"
                             + user_name + ":" + application_name);
-        this.df = new SimpleDateFormat("MM/dd/YY-HH:mm:ss");
+        this.df = new SimpleDateFormat("MM/dd/yy-HH:mm:ss");
         // this.df = new SimpleDateFormat("MM/dd/YY-HH:mm:ss.SSS");
         this.event_name = event_name;
         this.event_type = event_type;
