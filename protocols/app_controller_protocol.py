@@ -100,10 +100,10 @@ class AppControlProtocol(object):
                               'type':types.StringType}, \
                              {'name':'timestamp', \
                               'type':types.StringType}, \
-                             {'name':'*', \
-                              'type':types.StringType, \
-                              'min':0,
-                              'max':20}], \
+                             {'name':'event data type', \
+                              'type':types.StringType}, \
+                             {'name':'event data', \
+                              'type':types.StringType}], \
                  'ERROR': [{'name':'message', \
                               'type':types.StringType}], \
                  'QUIT': []}

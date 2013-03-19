@@ -51,6 +51,8 @@ public class App extends Thread
         System.out.println("arg[0]: " + args[0]);
         System.out.println("Working Directory = " +
                       System.getProperty("user.dir"));
+        System.out.println("Java lib directories: " +
+                      System.getProperty("java.library.path"));
         App app = new App(args[0], args[1]);
         app.start();
     }

@@ -57,7 +57,11 @@ class AppExec(log.Logger):
                 self.event_cback("FINISHED", [self.return_code])
 
     def __process_stdout(self, msg):
-        self.event_cback("STDOUT", [msg])
+        self.__send_output_event("STDOUT", msg)
+
+    def __send_output_event(self, event_type, output_string):
+        timestamp = time.strftime("%x-%X")
+        self.event_cback(event_type, [timestamp, "string", ])
 
     def __process_stderr(self, msg):
         self.event_cback("STDERR", [msg])

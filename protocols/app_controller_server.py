@@ -85,8 +85,11 @@ class AppControlServer(log.Logger):
     def finished(self, error_code):
         self.proto.action("finished", [error_code])
 
-    def event(self, event_msgs=[]):
-        self.proto.action("event", event_msgs)
+    def event(self, event_name, timestamp, event_data_type, event_data):
+        self.proto.action("event", [event_name,
+                                    timestamp,
+                                    event_data_type,
+                                    event_data)
 
     def close(self):
         self.__close_file()
@@ -134,7 +137,7 @@ class AppControlServer(log.Logger):
         self.proto.send({'message':["FINISHED", str(action_args[0])]})
 
     def a_event(self, action_name, action_args):
-        pass
+        self.proto.send({'message':["EVENT", action_args]})
 
     def a_quit(self, action_name, action_args):
         self.close()
@@ -222,7 +225,7 @@ class AppControlServer(log.Logger):
 
     def __report_event(self, event_name, event_args=[]):
         if self.event_cback is not None:
-            self.event_cback(self, event_name, event_args)
+            self.event_cback(event_name, event_args)
 
     def __create_file(self):
         self.__close_file()

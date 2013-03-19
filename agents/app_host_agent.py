@@ -25,23 +25,23 @@ class AppHostAgent(object):
         if event_name == "FINISHED":
             self.acs.finished(event_args[0])
 
-    def __acs_event_cback(self, acs, event_name, event_args=[]):
+    def __acs_event_cback(self, event_name, event_args=[]):
         print "ACS event: " + event_name
 
         if event_name == "LOADED":
             # Create the app object if it does not
             # already exist.
-            assert(acs.file_name != "")
-            assert(acs.label != "")
+            assert(self.acs.file_name != "")
+            assert(self.acs.label != "")
             if self.app is None:
                 self.app = app_exec.JavaAppExec(self.user_name,
-                                            acs.file_name,
-                                            acs.label,
+                                            self.acs.file_name,
+                                            self.acs.label,
                                             self.__app_event_cback)
         if event_name == "RUN":
             assert(self.app is not None)
             command = event_args[0]
-            self.app.run(command)
+            self.app.run([command])
         if event_name == "STOP":
             assert(self.app is not None)
             self.app.stop()

@@ -251,7 +251,7 @@ class AppControlClient(log.Logger):
         self.__report_event("STOPPED")
 
     def m_event(self, msg):
-        pass
+        self.__report_event("EVENT", msg)
 
     def m_finished(self, msg):
         self.error_code = int(msg['message'][1])
