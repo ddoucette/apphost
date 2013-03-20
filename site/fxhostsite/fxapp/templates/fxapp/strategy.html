@@ -1,0 +1,14 @@
+{% if strategy %}
+    <h1>{{strategy}}</h1>
+    {% if runs %}
+        <ul>
+        {% for run in runs %}
+            <li><a href="/fxapp/run/{{run.id}}/">{{run.time}}</a></li>
+        {% endfor %}
+        </ul>
+    {% else %}
+        <p>No runs are available.</p>
+    {% endif %}
+{% else %}
+    <p>No strategys are available.</p>
+{% endif %}

@@ -1,0 +1,9 @@
+{% if customer_list %}
+    <ul>
+    {% for customer in customer_list %}
+        <li><a href="/fxapp/{{ customer.id }}/">{{ customer.username}}</a></li>
+    {% endfor %}
+    </ul>
+{% else %}
+    <p>No customers are available.</p>
+{% endif %}

@@ -1,0 +1,10 @@
+{% if customer %}
+    <h1>{{customer}}</h1>
+    <ul>
+    {% for strategy in strategy_list %}
+        <li><a href="/fxapp/strategy/{{strategy.id}}/">{{strategy.name}}</a></li>
+    {% endfor %}
+    </ul>
+{% else %}
+    <p>No customers are available.</p>
+{% endif %}

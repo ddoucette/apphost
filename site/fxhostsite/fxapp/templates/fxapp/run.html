@@ -1,0 +1,8 @@
+{% if run %}
+    <p>{{run.strategy.customer.username}}</p>
+    <p>{{run.time}}</p>
+    <p>{{run.strategy}}</p>
+    <p>{{run.complete}}</p>
+{% else %}
+    <p>No runs are available.</p>
+{% endif %}

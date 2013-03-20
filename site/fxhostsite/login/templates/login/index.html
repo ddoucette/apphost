@@ -1,0 +1,14 @@
+<html>
+<head>
+{% load staticfiles %}
+<script src="{% static "js/jquery.min.js" %}"></script>
+<script type="text/javascript">
+    var the_next_page = "{{next_page}}"
+    $(document).ready(function () {$('#theh1').append(" ... howareya ... " + the_next_page)})
+</script>
+</head>
+<body>
+<h1 id="theh1">hi</h1>
+<a href={{next_page}}>go here now</a>
+</body>
+</html>
